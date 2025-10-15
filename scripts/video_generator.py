@@ -9,13 +9,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict
 from dotenv import load_dotenv
-import anthropic
 from pydantic import BaseModel, Field
 import xmltodict
 
 # Add parent directory to path for utils import
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import save_json, load_json, TokenTracker
+from utils import save_json, load_json, TokenTracker, AIRequest, AnthropicModel, call_anthropic
 
 load_dotenv()
 
@@ -176,7 +175,6 @@ def encode_image_to_base64(image_path: str) -> str:
 
 def analyze_video_frames(video_path: str, frame_interval: float = 5, max_frames: int = 10, video_id: str = "") -> VideoAnalysisResult:
     """Analyze video by extracting frames and using Claude's vision capabilities"""
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     
     print(f"\n🔍 Analyzing: {Path(video_path).name}")
     
@@ -228,16 +226,16 @@ def analyze_video_frames(video_path: str, frame_interval: float = 5, max_frames:
             ])
         
         print("🤖 Analyzing with Claude...")
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        request = AIRequest(
+            messages=[{"role": "user", "content": content}],
+            model=AnthropicModel.CLAUDE_SONNET_4,
             max_tokens=2000,
-            messages=[{"role": "user", "content": content}]
+            step_name="Video Analysis"
         )
-        
-        token_tracker.track("Video Analysis", message)
-        
+        response = call_anthropic(request, token_tracker)
+
         # Print raw LLM output
-        raw_response = message.content[0].text.strip()
+        raw_response = response.content
         print(f"\n🤖 RAW VIDEO ANALYSIS RESPONSE:")
         print("="*80)
         print(raw_response)
@@ -372,19 +370,17 @@ Look at the video_id field in each frame to determine which video the clip comes
 Focus on action, movement, technique, and dynamic moments. Avoid static positioning or setup time."""
 
     # Call Claude
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    
     print("🤖 Asking Claude to select optimal clips...")
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+    request = AIRequest(
+        messages=[{"role": "user", "content": clip_selection_prompt}],
+        model=AnthropicModel.CLAUDE_SONNET_4,
         max_tokens=1500,
-        messages=[{"role": "user", "content": clip_selection_prompt}]
+        step_name="Clip Selection"
     )
-    
-    token_tracker.track("Clip Selection", message)
-    
+    response = call_anthropic(request, token_tracker)
+
     # Print raw LLM output
-    raw_response = message.content[0].text.strip()
+    raw_response = response.content
     print(f"\n🤖 RAW CLIP SELECTION RESPONSE:")
     print("="*80)
     print(raw_response)

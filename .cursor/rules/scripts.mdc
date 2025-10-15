@@ -1,44 +1,144 @@
 ---
-description: 
-globs: .py
+description: Rules for writing scripts in script_builder repository
+globs: scripts/*.py
 alwaysApply: false
 ---
 # Script Builder Rules
 
 ## Project Structure
-- **Scripts**: Create `.py` files in project root
-- **Inputs**: Place input files in `inputs/` directory  
-- **Outputs**: Generate results in `outputs/` directory
-- **Cache**: For saving interim output that can be reloaded
-- **Environment**: Store API keys in `.env` file
+- **Scripts**: Create `.py` files in `scripts/` directory (not root)
+- **Utils**: Reusable code goes in `utils/` (only if used by multiple scripts)
+- **Inputs**: Place input files in `inputs/` directory
+- **Outputs**: Final results only in `outputs/` directory
+- **Cache**: Interim steps and processing logs as JSON with timestamps
+- **Environment**: Store API keys in `.env` file (loaded automatically by utils)
 
 ## Package Management
 - **Install packages**: `uv add package_name`
-- **Run scripts**: `uv run script_name.py`
+- **Run scripts**: `uv run scripts/script_name.py`
 - **Never use pip**: Always use `uv` for dependency management
 
-## Code Standards
-- **Environment variables**: Use `python-dotenv` and load from `.env`
-- **Modules**: Always import modules at the top of file rather than inside functions
-- **File paths**: Use `pathlib.Path` for cross-platform compatibility
-- **Input/Output**: Always use `inputs/` and `outputs/` directories
-- **Cache**: When prototyping, save interim output here so it can be reloaded to save time or cost.
-- **Error handling**: Provide clear error messages and graceful exits
-- **Functions**: should always be strongly typed using Pydantic.
+## Imports Pattern
+```python
+import sys
+from pathlib import Path
+from datetime import datetime
 
-## Script Structure
-- Check for required environment variables at startup
-- Create `inputs/` and `outputs/` directories if they don't exist
-- Handle file discovery in `inputs/` directory
-- Save results with descriptive names in `outputs/`
+# Add parent to path for utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker, save_json, load_json
+```
 
-## Dependencies
-- Use standard imports: `os`, `sys`, `pathlib.Path`
-- Add external packages via `uv add` only when needed
-- Prefer built-in libraries when possible
+## LLM Calls (REQUIRED PATTERN)
+- **Never initialize Anthropic client directly**: API keys handled by utils
+- **Always use utils**: `call_anthropic(request, tracker)`
+- **Always track tokens**: Initialize `TokenTracker()` at script start
+- **Descriptive step names**: Use meaningful names like "Video Analysis" not "Step 1"
+- **Save token summary**: Always call `tracker.save_summary()` at end
 
-## User Experience
-- Show clear progress indicators
-- Ask for user confirmation before destructive operations
-- Provide helpful error messages with next steps
-- Use emojis for visual feedback (✅ ❌ 🔄 etc.)
+```python
+tracker = TokenTracker()
+
+request = AIRequest(
+    messages=[{"role": "user", "content": "..."}],
+    model=AnthropicModel.CLAUDE_SONNET_4,
+    max_tokens=1000,
+    step_name="Descriptive Step Name"
+)
+response = call_anthropic(request, tracker)
+```
+
+## Data Models
+- **Use Pydantic**: All structured data should use `BaseModel`
+- **Type hints**: All function parameters and return types
+- **Validation**: Let Pydantic handle validation automatically
+
+```python
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+class Result(BaseModel):
+    field: str
+    score: float
+    items: List[str] = Field(default_factory=list)
+```
+
+## File I/O Pattern
+- **Cache for interim steps**: Analysis, processing logs, intermediate results
+- **Outputs for finals**: Videos, reports, final artifacts only
+- **Always timestamp**: Use `datetime.now().strftime("%Y%m%d_%H%M%S")`
+- **Use utils**: `save_json()` and `load_json()` for consistency
+
+```python
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# Interim step to cache
+save_json(data, f"analysis_{timestamp}.json", output_dir="cache", description="Analysis")
+
+# Final result to outputs
+save_json(final, f"result_{timestamp}.json", output_dir="outputs", description="Final")
+```
+
+## Available Models
+- **Default**: `AnthropicModel.CLAUDE_SONNET_4` (balanced)
+- **Best quality**: `AnthropicModel.CLAUDE_OPUS_4` (slower, expensive)
+- **Fast/cheap**: `AnthropicModel.CLAUDE_3_HAIKU`
+- **Previous gen**: `AnthropicModel.CLAUDE_SONNET_3_5`
+
+## Script Structure Template
+```python
+import sys
+from pathlib import Path
+from datetime import datetime
+from pydantic import BaseModel
+from typing import List, Optional
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker, save_json
+
+tracker = TokenTracker()
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+class MyResult(BaseModel):
+    field: str
+
+def main():
+    print("🔍 Starting...")
+
+    # 1. Load inputs
+    # 2. Process with LLM
+    # 3. Save interim to cache/
+    # 4. Save final to outputs/
+    # 5. Save token usage
+
+    tracker.save_summary("script_name", output_dir="cache")
+    print("✅ Complete!")
+
+if __name__ == "__main__":
+    main()
+```
+
+## Logging & Visibility
+- **Use emojis**: 🔍 analysis, 🤖 LLM calls, 💾 saving, 📊 stats, ✅ success, ❌ errors
+- **Print progress**: Show what's happening for long operations
+- **Token tracking**: Automatic with `TokenTracker` (prints per-step usage)
+
+## Error Handling
+- **Fail fast**: Check inputs early, exit with clear messages
+- **Descriptive errors**: Tell user what went wrong and what to do
+- **Graceful exits**: Use `sys.exit(1)` with error message
+
+```python
+if not input_path.exists():
+    print(f"❌ Input not found: {input_path}")
+    sys.exit(1)
+```
+
+## DON'Ts
+- ❌ Don't import or initialize `anthropic` client directly
+- ❌ Don't save interim steps to `outputs/` (only finals)
+- ❌ Don't skip token tracking
+- ❌ Don't use generic step names ("Step 1", "LLM Call")
+- ❌ Don't hard-code API keys
+- ❌ Don't forget timestamps in filenames
+- ❌ Don't put task-specific code in utils prematurely
