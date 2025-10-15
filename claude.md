@@ -98,6 +98,10 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add parent to path for utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -297,6 +301,10 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker, save_json
@@ -375,6 +383,7 @@ if __name__ == "__main__":
 ❌ Don't hard-code API keys
 ❌ Don't skip type hints
 ❌ Don't create utils prematurely - keep in script until needed by multiple scripts
+❌ Don't forget to call `load_dotenv()` at the top of scripts to load environment variables
 
 ## Key Takeaway
 

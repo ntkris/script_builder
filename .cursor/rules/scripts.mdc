@@ -23,6 +23,10 @@ alwaysApply: false
 import sys
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add parent to path for utils
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -92,6 +96,10 @@ from pathlib import Path
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker, save_json
@@ -142,3 +150,4 @@ if not input_path.exists():
 - ❌ Don't hard-code API keys
 - ❌ Don't forget timestamps in filenames
 - ❌ Don't put task-specific code in utils prematurely
+- ❌ Don't forget to call `load_dotenv()` at the top of scripts

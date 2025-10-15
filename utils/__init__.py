@@ -8,10 +8,13 @@ from .ai import (
     Provider,
     AnthropicModel,
     OpenAIModel,
+    GeminiModel,
     ToolDefinition,
     ToolCall,
     call_anthropic,
+    call_gemini,
 )
+from .search import search_exa, SearchResult
 
 __all__ = [
     'save_json',
@@ -25,7 +28,11 @@ __all__ = [
     'Provider',
     'AnthropicModel',
     'OpenAIModel',
+    'GeminiModel',
     'ToolDefinition',
     'ToolCall',
     'call_anthropic',
+    'call_gemini',
+    'search_exa',
+    'SearchResult',
 ]

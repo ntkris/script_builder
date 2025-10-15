@@ -9,6 +9,7 @@ class Provider(str, Enum):
     """AI provider options"""
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    GOOGLE = "google"
     # Add more providers as needed
 
 
@@ -29,6 +30,23 @@ class OpenAIModel(str, Enum):
     GPT_4_TURBO = "gpt-4-turbo"
     GPT_4 = "gpt-4"
     GPT_35_TURBO = "gpt-3.5-turbo"
+
+
+class GeminiModel(str, Enum):
+    """Google Gemini models"""
+    # Gemini 2.5 (Latest)
+    GEMINI_2_5_PRO = "gemini-2.5-pro"
+    GEMINI_2_5_FLASH = "gemini-2.5-flash"
+    GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
+
+    # Gemini 2.0
+    GEMINI_2_0_FLASH = "gemini-2.0-flash"
+    GEMINI_2_0_FLASH_LITE = "gemini-2.0-flash-lite"
+
+    # Gemini 1.5 (Legacy)
+    GEMINI_1_5_FLASH = "gemini-1.5-flash"
+    GEMINI_1_5_FLASH_8B = "gemini-1.5-flash-8b"
+    GEMINI_1_5_PRO = "gemini-1.5-pro"
 
 
 class ToolDefinition(BaseModel):
