@@ -1,0 +1,44 @@
+---
+description: 
+globs: .py
+alwaysApply: false
+---
+# Script Builder Rules
+
+## Project Structure
+- **Scripts**: Create `.py` files in project root
+- **Inputs**: Place input files in `inputs/` directory  
+- **Outputs**: Generate results in `outputs/` directory
+- **Cache**: For saving interim output that can be reloaded
+- **Environment**: Store API keys in `.env` file
+
+## Package Management
+- **Install packages**: `uv add package_name`
+- **Run scripts**: `uv run script_name.py`
+- **Never use pip**: Always use `uv` for dependency management
+
+## Code Standards
+- **Environment variables**: Use `python-dotenv` and load from `.env`
+- **Modules**: Always import modules at the top of file rather than inside functions
+- **File paths**: Use `pathlib.Path` for cross-platform compatibility
+- **Input/Output**: Always use `inputs/` and `outputs/` directories
+- **Cache**: When prototyping, save interim output here so it can be reloaded to save time or cost.
+- **Error handling**: Provide clear error messages and graceful exits
+- **Functions**: should always be strongly typed using Pydantic.
+
+## Script Structure
+- Check for required environment variables at startup
+- Create `inputs/` and `outputs/` directories if they don't exist
+- Handle file discovery in `inputs/` directory
+- Save results with descriptive names in `outputs/`
+
+## Dependencies
+- Use standard imports: `os`, `sys`, `pathlib.Path`
+- Add external packages via `uv add` only when needed
+- Prefer built-in libraries when possible
+
+## User Experience
+- Show clear progress indicators
+- Ask for user confirmation before destructive operations
+- Provide helpful error messages with next steps
+- Use emojis for visual feedback (✅ ❌ 🔄 etc.)
