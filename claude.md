@@ -62,6 +62,7 @@ response = call_anthropic(request, tracker)
 - Don't import or initialize `anthropic` client directly
 - Always pass `tracker` for automatic token tracking
 - Use descriptive `step_name` for logging clarity
+- **Use Pydantic models** for all structured data (not TypedDict or dataclasses)
 
 #### JSON I/O
 ```python
@@ -128,9 +129,11 @@ if __name__ == "__main__":
     main()
 ```
 
-### 4. Use Pydantic for Structured Data
+### 4. Use Pydantic for Structured Data and Typing
 
-All data models should use Pydantic:
+**IMPORTANT: Always use Pydantic models for all structured data and type definitions.**
+
+All data models should use Pydantic instead of TypedDict, dataclasses, or plain dicts:
 ```python
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -140,9 +143,22 @@ class VideoFrame(BaseModel):
     description: str
     scene_type: str
     score: float = 0.0
+    tags: List[str] = Field(default_factory=list)
+    metadata: Optional[dict] = None
 ```
 
-This is consistent with the AI interface (AIRequest, AIResponse are Pydantic models).
+**Why Pydantic:**
+- Runtime validation and type checking
+- Automatic serialization/deserialization with `.model_dump()` and `.model_validate()`
+- Consistent with the AI interface (AIRequest, AIResponse are Pydantic models)
+- Better error messages and data validation
+- Field-level validation and constraints with `Field()`
+
+**Use Pydantic instead of:**
+- ❌ TypedDict
+- ❌ dataclasses
+- ❌ Plain dictionaries with manual type hints
+- ❌ NamedTuples
 
 ### 5. Logging and Visibility
 
@@ -384,6 +400,7 @@ if __name__ == "__main__":
 ❌ Don't skip type hints
 ❌ Don't create utils prematurely - keep in script until needed by multiple scripts
 ❌ Don't forget to call `load_dotenv()` at the top of scripts to load environment variables
+❌ Don't use TypedDict, dataclasses, or plain dicts - always use Pydantic BaseModel
 
 ## Key Takeaway
 

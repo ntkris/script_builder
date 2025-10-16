@@ -52,10 +52,12 @@ request = AIRequest(
 response = call_anthropic(request, tracker)
 ```
 
-## Data Models
-- **Use Pydantic**: All structured data should use `BaseModel`
+## Data Models (REQUIRED PATTERN)
+- **ALWAYS use Pydantic**: All structured data MUST use `BaseModel`
+- **NEVER use**: TypedDict, dataclasses, NamedTuples, or plain dicts for structured data
 - **Type hints**: All function parameters and return types
 - **Validation**: Let Pydantic handle validation automatically
+- **Serialization**: Use `.model_dump()` for JSON, `.model_validate()` for parsing
 
 ```python
 from pydantic import BaseModel, Field
@@ -65,7 +67,14 @@ class Result(BaseModel):
     field: str
     score: float
     items: List[str] = Field(default_factory=list)
+    metadata: Optional[dict] = None
 ```
+
+**Why Pydantic:**
+- Runtime validation and type checking
+- Better error messages
+- Consistent with AI utils (AIRequest, AIResponse)
+- Automatic serialization/deserialization
 
 ## File I/O Pattern
 - **Cache for interim steps**: Analysis, processing logs, intermediate results
@@ -151,3 +160,4 @@ if not input_path.exists():
 - ❌ Don't forget timestamps in filenames
 - ❌ Don't put task-specific code in utils prematurely
 - ❌ Don't forget to call `load_dotenv()` at the top of scripts
+- ❌ Don't use TypedDict, dataclasses, or plain dicts - ALWAYS use Pydantic BaseModel
