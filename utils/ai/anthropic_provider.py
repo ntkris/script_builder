@@ -1,10 +1,27 @@
 """Anthropic Claude provider implementation"""
 
-from typing import Optional, List
+from typing import Optional, List, Type
 import os
+import json
 import anthropic
-from .base import AIRequest, AIResponse, Provider, ToolCall
-from ..token_tracking import TokenTracker
+import xmltodict
+from pydantic import BaseModel
+from .base import AIRequest, AIResponse, Provider, ToolCall, TokenTracker
+
+
+def _generate_json_schema_prompt(schema) -> str:
+    """Generate JSON schema description from Pydantic model for Claude"""
+    import typing
+
+    # Check if it's a list type
+    schema_origin = typing.get_origin(schema)
+    if schema_origin is list or schema_origin is List:
+        item_type = typing.get_args(schema)[0]
+        schema_dict = item_type.model_json_schema()
+        return f"Please output a JSON array of objects matching this schema: {json.dumps(schema_dict, indent=2)}"
+    else:
+        schema_dict = schema.model_json_schema()
+        return f"Please output a JSON object matching this schema: {json.dumps(schema_dict, indent=2)}"
 
 
 def call_anthropic(
@@ -45,19 +62,37 @@ def call_anthropic(
         raise ValueError("ANTHROPIC_API_KEY not found in environment variables or provided as argument")
 
     client = anthropic.Anthropic(api_key=api_key)
+
+    # Handle structured output with XML-wrapped JSON
+    messages = request.messages.copy()
+    system_prompt = request.system or ""
+
+    if request.json_mode and request.response_schema:
+        # Generate JSON schema prompt
+        json_schema_prompt = _generate_json_schema_prompt(request.response_schema)
+
+        if system_prompt:
+            system_prompt = f"{system_prompt}\n\n{json_schema_prompt}"
+        else:
+            system_prompt = json_schema_prompt
+
+        # Prefill assistant response with opening XML tag
+        # Claude will output JSON and close with </result>
+        messages.append({"role": "assistant", "content": "<result>"})
+
     # Build API call parameters
     params = {
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "messages": request.messages,
+        "messages": messages,
     }
 
     # Add optional parameters
     if request.temperature is not None:
         params["temperature"] = request.temperature
 
-    if request.system is not None:
-        params["system"] = request.system
+    if system_prompt:
+        params["system"] = system_prompt
 
     # Add tools if provided
     if request.tools:
@@ -97,17 +132,36 @@ def call_anthropic(
                 arguments=block.input
             ))
 
+    # If json_mode is enabled, parse XML-wrapped JSON
+    if request.json_mode and request.response_schema:
+        try:
+            # Claude outputs: JSON</result>
+            # Reconstruct full XML by adding opening tag (closing tag already there)
+            xml_content = "<result>" + content
+            parsed = xmltodict.parse(xml_content)
+            result_data = parsed["result"]
+
+            # If xmltodict parsed it as a string, that's the JSON - use it directly
+            # If it parsed it as a dict/list, convert back to JSON string
+            if isinstance(result_data, str):
+                content = result_data
+            else:
+                content = json.dumps(result_data)
+        except Exception as e:
+            # If XML parsing fails, return raw content with error indication
+            print(f"⚠️  Warning: Failed to parse XML response: {e}")
+            print(f"Raw content: {content}")
+            import traceback
+            traceback.print_exc()
+            # Keep original content
+
     # Calculate token usage
     input_tokens = message.usage.input_tokens
     output_tokens = message.usage.output_tokens
     total_tokens = input_tokens + output_tokens
 
-    # Automatic token tracking
-    if token_tracker:
-        token_tracker.track(request.step_name, message)
-
     # Return normalized response
-    return AIResponse(
+    ai_response = AIResponse(
         content=content.strip(),
         model=message.model,
         provider=Provider.ANTHROPIC,
@@ -118,3 +172,9 @@ def call_anthropic(
         finish_reason=message.stop_reason,
         raw_response=message
     )
+
+    # Automatic token tracking
+    if token_tracker:
+        token_tracker.track(request.step_name, ai_response)
+
+    return ai_response

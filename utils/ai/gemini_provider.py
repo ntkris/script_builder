@@ -4,8 +4,7 @@ from typing import Optional, List
 import os
 from google import genai
 from google.genai import types
-from .base import AIRequest, AIResponse, Provider, ToolCall
-from ..token_tracking import TokenTracker
+from .base import AIRequest, AIResponse, Provider, ToolCall, TokenTracker
 
 
 def call_gemini(
@@ -58,6 +57,12 @@ def call_gemini(
 
     if request.system is not None:
         config_params["system_instruction"] = request.system
+
+    # Handle structured output (json_mode)
+    if request.json_mode and request.response_schema:
+        config_params["response_mime_type"] = "application/json"
+        # Gemini accepts list[Type] syntax directly
+        config_params["response_schema"] = request.response_schema
 
     # Handle tools if provided
     if request.tools:
@@ -128,28 +133,13 @@ def call_gemini(
     output_tokens = response.usage_metadata.candidates_token_count if hasattr(response, 'usage_metadata') else 0
     total_tokens = input_tokens + output_tokens
 
-    # Create a mock message object for token tracker compatibility
-    class MockMessage:
-        def __init__(self, input_tokens, output_tokens, model):
-            self.usage = type('Usage', (), {
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens
-            })()
-            self.model = model
-
-    mock_message = MockMessage(input_tokens, output_tokens, request.model)
-
-    # Automatic token tracking
-    if token_tracker:
-        token_tracker.track(request.step_name, mock_message)
-
     # Get finish reason
     finish_reason = None
     if response.candidates:
         finish_reason = str(response.candidates[0].finish_reason)
 
     # Return normalized response
-    return AIResponse(
+    ai_response = AIResponse(
         content=content.strip(),
         model=request.model,
         provider=Provider.GOOGLE,
@@ -160,3 +150,9 @@ def call_gemini(
         finish_reason=finish_reason,
         raw_response=response
     )
+
+    # Automatic token tracking
+    if token_tracker:
+        token_tracker.track(request.step_name, ai_response)
+
+    return ai_response

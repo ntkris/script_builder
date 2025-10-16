@@ -35,9 +35,15 @@ script_builder/
 
 ### 1. File Organization
 - **Scripts** go in `scripts/` directory
-- **Interim steps** (analysis, processing logs) → `cache/` as JSON
-- **Final outputs** (videos, final reports) → `outputs/`
+- **Interim steps** (analysis, processing logs, **token tracking**) → `cache/` as JSON
+- **Final outputs** (videos, final reports, completed deliverables) → `outputs/`
+- **Token tracking**: ALWAYS save to `cache/` directory (not outputs)
 - Always include timestamps in filenames: `analysis_20250622_143022.json`
+
+**Important**:
+- ✅ Save interim data, processing steps, and token usage to `cache/`
+- ✅ Save ONLY final, completed deliverables to `outputs/`
+- ❌ Never save token tracking files to `outputs/`
 
 ### 2. Utils Available
 
@@ -87,7 +93,7 @@ tracker = TokenTracker()
 total = tracker.get_total_usage()
 print(f"Total: {total.total_tokens} tokens")
 
-# Save summary to cache
+# IMPORTANT: Always save token tracking to cache (not outputs)
 tracker.save_summary("script_name", output_dir="cache")
 ```
 
@@ -120,9 +126,9 @@ class Result(BaseModel):
 def main():
     # 1. Load inputs
     # 2. Process with LLM (track tokens)
-    # 3. Save interim steps to cache/
+    # 3. Save interim steps to cache/ (including token tracking)
     # 4. Save final output to outputs/
-    # 5. Save token summary
+    # 5. IMPORTANT: Save token summary to cache (not outputs)
     tracker.save_summary("script_name", output_dir="cache")
 
 if __name__ == "__main__":
@@ -376,11 +382,11 @@ def main():
     # Save interim results to cache
     save_json(results, f"analyses_{timestamp}.json", output_dir="cache", description="Text Analyses")
 
-    # Save summary to outputs
+    # Save final summary to outputs
     summary = {"total_files": len(text_files), "timestamp": timestamp}
     save_json(summary, f"summary_{timestamp}.json", output_dir="outputs", description="Summary")
 
-    # Save token usage
+    # Save token usage to cache (NEVER outputs)
     tracker.save_summary("text_analyzer", output_dir="cache")
 
     print("✅ Analysis complete!")
@@ -393,6 +399,7 @@ if __name__ == "__main__":
 
 ❌ Don't initialize `anthropic.Anthropic()` client directly
 ❌ Don't save interim steps to `outputs/` (only final results)
+❌ Don't save token tracking to `outputs/` (always use `cache/`)
 ❌ Don't forget to track tokens
 ❌ Don't use generic step names ("Step 1") - be descriptive
 ❌ Don't import anthropic unless absolutely needed for advanced features
