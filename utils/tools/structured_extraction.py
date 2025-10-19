@@ -1,4 +1,4 @@
-"""Structured data extraction from text using Gemini Flash 2.5"""
+"""Structured data extraction from text using Gemini Flash models"""
 
 from typing import Type, TypeVar, List, Union, Optional
 from pydantic import BaseModel, ValidationError
@@ -16,10 +16,11 @@ def extract(
     prompt: str = "Extract structured data from the following text:",
     tracker: Optional[TokenTracker] = None,
     return_list: bool = False,
-    step_name: str = "Structured Extraction"
+    step_name: str = "Structured Extraction",
+    model: GeminiModel = GeminiModel.GEMINI_2_0_FLASH
 ) -> Union[T, List[T]]:
     """
-    Extract structured data from text using Gemini Flash 2.5 with native JSON mode.
+    Extract structured data from text using Gemini Flash models with native JSON mode.
 
     Args:
         text: The text to extract data from
@@ -68,7 +69,7 @@ def extract(
     # Create request with json_mode enabled
     request = AIRequest(
         messages=[{"role": "user", "content": full_prompt}],
-        model=GeminiModel.GEMINI_2_0_FLASH,
+        model=model,
         provider=Provider.GOOGLE,
         max_tokens=4096,
         json_mode=True,
