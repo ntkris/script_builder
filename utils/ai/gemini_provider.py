@@ -117,6 +117,8 @@ def call_gemini(
 
     if response.candidates:
         candidate = response.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            raise ValueError("No response from Gemini - content is empty")
         for part in candidate.content.parts:
             if hasattr(part, 'text') and part.text:
                 content += part.text
