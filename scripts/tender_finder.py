@@ -15,13 +15,11 @@ from pydantic import BaseModel, Field, ValidationError
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils import (  # noqa: E402
-    AIRequest,
-    GeminiModel,
-    Provider,
     TokenTracker,
-    call_gemini,
     search_exa,
     SearchResult,
+    save_json,
+    extract,
 )
 
 
@@ -102,38 +100,29 @@ Guidelines:
 
 Return only structured JSON matching the specified schema."""
 
-    request = AIRequest(
-        messages=[{"role": "user", "content": prompt}],
-        model=GeminiModel.GEMINI_2_5_FLASH,
-        provider=Provider.GOOGLE,
-        max_tokens=1200,
-        json_mode=True,
-        response_schema=QueryPlan,
-        step_name="Generate Tender Queries",
-    )
-
-    response = call_gemini(request, tracker)
-
     try:
-        plan = QueryPlan.model_validate_json(response.content)
+        plan = extract(
+            text="",
+            schema=QueryPlan,
+            prompt=prompt,
+            tracker=tracker,
+            step_name="Generate Tender Queries",
+        )
         print(f"✅ Generated {len(plan.queries)} queries")
         return plan.queries
-    except ValidationError as err:
-        print(f"⚠️ Failed to parse structured queries: {err}")
-    except ValueError as err:
-        print(f"⚠️ Gemini response was not valid JSON: {err}")
-
-    print("Using fallback tender queries.")
-    fallback = [
-        SearchQuery(
-            query=f"{location} public tender {description}",
-            reasoning="General tender search",
-        ),
-        SearchQuery(
-            query=f"{location} procurement opportunity site:gov", reasoning="Government portals"
-        ),
-    ]
-    return fallback[:max_queries]
+    except (ValidationError, ValueError) as err:
+        print(f"⚠️ Failed to generate queries: {err}")
+        print("Using fallback tender queries.")
+        fallback = [
+            SearchQuery(
+                query=f"{location} public tender {description}",
+                reasoning="General tender search",
+            ),
+            SearchQuery(
+                query=f"{location} procurement opportunity site:gov", reasoning="Government portals"
+            ),
+        ]
+        return fallback[:max_queries]
 
 
 def evaluate_search_result(
@@ -170,32 +159,22 @@ Query: {result.query}
 Title: {result.title}
 URL: {result.url}
 Published date (from search): {result.published_date or 'Unknown'}
-Highlights: {highlights}
+Highlights: {highlights}"""
 
-Extracted page text:
-{result.text}
-
-Return JSON that conforms to the provided schema."""
-
-    request = AIRequest(
-        messages=[{"role": "user", "content": prompt}],
-        model=GeminiModel.GEMINI_2_5_FLASH,
-        provider=Provider.GOOGLE,
-        max_tokens=1800,
-        json_mode=True,
-        response_schema=TenderExtraction,
-        step_name="Evaluate Tender",
-    )
-
-    response = call_gemini(request, tracker)
+    text = f"Extracted page text:\n{result.text}"
 
     try:
-        extraction = TenderExtraction.model_validate_json(response.content)
+        extraction = extract(
+            text=text,
+            schema=TenderExtraction,
+            prompt=prompt,
+            tracker=tracker,
+            step_name="Evaluate Tender",
+        )
+        return extraction
     except (ValidationError, ValueError) as err:
         print(f"⚠️ Failed to parse tender data for {result.url}: {err}")
         return None
-
-    return extraction
 
 
 def within_last_30_days(published_date: Optional[str]) -> bool:
@@ -217,10 +196,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     """Create CLI argument parser."""
 
     parser = argparse.ArgumentParser(description="Discover fresh tenders tailored to a company.")
-    parser.add_argument("url", help="Company website URL")
-    parser.add_argument("location", help="Primary geographic focus for tenders")
     parser.add_argument(
-        "text",
+        "--url",
+        default="https://www.kcsprojects.co.uk/",
+        help="Company website URL (default: https://www.kcsprojects.co.uk/)",
+    )
+    parser.add_argument(
+        "--location",
+        default="United Kingdom",
+        help="Primary geographic focus for tenders (default: United Kingdom)",
+    )
+    parser.add_argument(
+        "--text",
+        default="KCS Projects is a fire and security systems company specializing in comprehensive protection solutions for commercial and public sector buildings. Our core services include security system design and installation (intruder alarms, CCTV surveillance, access control systems, automated gates and gate automation, security fencing), fire safety services (fire alarm installation and maintenance, fire door installation, fire compartmentation, fire strategy development), and safeguarding services (safeguarding audits, safeguarding strategy, security audits, security strategy). We provide integrated fire and security solutions for education facilities, healthcare buildings, commercial properties, and public infrastructure across the UK.",
         help="Short description of the company's services and differentiators",
     )
     parser.add_argument(
@@ -235,11 +223,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=6,
         help="Number of Exa results to fetch per query",
     )
-    parser.add_argument(
-        "--output-dir",
-        default="outputs",
-        help="Directory for the resulting CSV file",
-    )
     return parser
 
 
@@ -250,6 +233,7 @@ def main() -> None:
     load_dotenv()
 
     tracker = TokenTracker()
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
     queries = generate_search_queries(
         company_url=args.url,
@@ -259,12 +243,29 @@ def main() -> None:
         tracker=tracker,
     )
 
+    # Save generated queries to cache
+    save_json(
+        [q.model_dump() for q in queries],
+        f"queries_{timestamp}.json",
+        output_dir="cache",
+        description="Generated search queries",
+    )
+
     seen_urls: Set[str] = set()
     qualifying_rows = []
+    all_extractions = []
+    all_results = []
 
     for idx, query in enumerate(queries, start=1):
         print(f"\n🔎 Running query {idx}/{len(queries)}: {query.query}")
         results = search_exa(query.query, num_results=args.results_per_query, max_characters=4000)
+
+        # Track all search results for cache (full results)
+        for result in results:
+            all_results.append({
+                "query": query.query,
+                "result": result.model_dump(),
+            })
 
         for result in results:
             if result.url in seen_urls:
@@ -281,6 +282,12 @@ def main() -> None:
 
             if extraction is None:
                 continue
+
+            # Save all extraction attempts to cache
+            all_extractions.append({
+                "url": result.url,
+                "extraction": extraction.model_dump(),
+            })
 
             # Ensure all gating criteria are satisfied
             recent_by_model = extraction.is_recent
@@ -316,13 +323,31 @@ def main() -> None:
 
             print(f"   ✅ Added tender: {extraction.title}")
 
+    # Save search results to cache
+    save_json(
+        all_results,
+        f"search_results_{timestamp}.json",
+        output_dir="cache",
+        description="All search results",
+    )
+
+    # Save extraction results to cache
+    save_json(
+        all_extractions,
+        f"extractions_{timestamp}.json",
+        output_dir="cache",
+        description="All tender extractions",
+    )
+
     if not qualifying_rows:
         print("\nNo qualifying tenders were found.")
+        # Still save token summary even if no results
+        tracker.save_summary("tender_finder", output_dir="cache")
         return
 
-    output_dir = Path(args.output_dir)
+    # Always save final CSV to outputs directory
+    output_dir = Path("outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_path = output_dir / f"tenders_{timestamp}.csv"
 
     fieldnames = [
@@ -342,6 +367,9 @@ def main() -> None:
         writer.writerows(qualifying_rows)
 
     print(f"\n📄 Saved {len(qualifying_rows)} tenders to {output_path}")
+
+    # Save token tracking summary to cache
+    tracker.save_summary("tender_finder", output_dir="cache")
 
 
 if __name__ == "__main__":

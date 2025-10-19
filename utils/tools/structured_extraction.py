@@ -17,7 +17,7 @@ def extract(
     tracker: Optional[TokenTracker] = None,
     return_list: bool = False,
     step_name: str = "Structured Extraction",
-    model: GeminiModel = GeminiModel.GEMINI_2_0_FLASH
+    model: GeminiModel = GeminiModel.GEMINI_2_5_FLASH
 ) -> Union[T, List[T]]:
     """
     Extract structured data from text using Gemini Flash models with native JSON mode.
@@ -71,7 +71,7 @@ def extract(
         messages=[{"role": "user", "content": full_prompt}],
         model=model,
         provider=Provider.GOOGLE,
-        max_tokens=4096,
+        max_tokens=10000,
         json_mode=True,
         response_schema=response_schema,
         step_name=step_name
