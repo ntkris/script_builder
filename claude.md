@@ -38,15 +38,16 @@ script_builder/
 
 ### 1. File Organization
 - **Scripts** go in `scripts/` directory
-- **Interim steps** (analysis, processing logs, **token tracking**) → `cache/` as JSON
+- **Step logs** (with token tracking) → automatically saved to `cache/` by StepLogger
 - **Final outputs** (videos, final reports, completed deliverables) → `outputs/`
-- **Token tracking**: ALWAYS save to `cache/` directory (not outputs)
 - Always include timestamps in filenames: `analysis_20250622_143022.json`
 
 **Important**:
-- ✅ Save interim data, processing steps, and token usage to `cache/`
+- ✅ **StepLogger is your single source of truth** - log rich data in `inputs` and `outputs`
+- ✅ Log **actual data and decisions**, not just summary stats (for debugging)
 - ✅ Save ONLY final, completed deliverables to `outputs/`
-- ❌ Never save token tracking files to `outputs/`
+- ❌ Don't create separate cache files unless data is too large for StepLogger or needs reuse
+- ❌ Never save step logs to `outputs/` (StepLogger auto-saves to `cache/`)
 
 ### 2. Utils Available
 
@@ -57,26 +58,50 @@ from utils.step_logger import StepLogger
 
 logger = StepLogger("script_name")
 
-# Start a step
-logger.step("Generate Text", inputs={"prompt": "..."})
+# Start a step - log actual inputs, not just counts
+logger.step("Evaluate Candidates", inputs={
+    "candidates": [{"id": 1, "name": "..."}, {"id": 2, "name": "..."}],
+    "criteria": {"min_score": 0.8}
+})
 
 request = AIRequest(
     messages=[{"role": "user", "content": "..."}],
     model=AnthropicModel.CLAUDE_SONNET_4,
     max_tokens=1000,
-    step_name="Descriptive Step Name"  # Important for tracking
+    step_name="Evaluate Candidate 1"
 )
 response = call_anthropic(request, logger)
 
-# Log the output
-logger.output({"text": response.content})
+# Log actual data and decisions, not just summary stats
+logger.output({
+    "evaluations": [
+        {
+            "candidate_id": 1,
+            "score": 0.85,
+            "decision": "accepted",
+            "reason": "Strong technical background",
+            "extraction": {...}  # Full extraction object
+        },
+        {
+            "candidate_id": 2,
+            "score": 0.65,
+            "decision": "rejected",
+            "reason": "Insufficient experience",
+            "extraction": {...}
+        }
+    ],
+    "summary": {"accepted": 1, "rejected": 1}  # Stats are OK as supplement
+})
 
 # At the end of script
 logger.finalize()  # Prints summary and saves to cache/
 ```
 
-**Key points:**
-- `StepLogger` replaces the old `TokenTracker` - handles both step logging AND token tracking
+**Key principles:**
+- **Log rich data**: Include actual decisions, reasons, and extractions in `outputs`
+- **Log real inputs**: Not just counts - include actual data structures for debugging
+- **Single source of truth**: Everything you need to debug should be in the StepLogger JSON
+- `StepLogger` handles both step tracking AND token tracking automatically
 - API keys are handled internally (from `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` env vars)
 - Don't import or initialize provider clients directly
 - Always pass `logger` to LLM calls for automatic token tracking
@@ -84,18 +109,21 @@ logger.finalize()  # Prints summary and saves to cache/
 - **Use Pydantic models** for all structured data (not TypedDict or dataclasses)
 - All step logs save to `cache/` directory automatically with timestamps
 
-#### JSON I/O
+#### JSON I/O (Optional)
 ```python
 from utils import save_json, load_json
 
-# Save to cache (interim steps)
-save_json(data, "step1_20250622.json", output_dir="cache", description="Step 1")
+# Prefer logging to StepLogger instead of separate cache files
+# Only save separate files if:
+# - Data is too large for StepLogger (e.g., full page text, images)
+# - Data needs to be reused by another script/process
+# - You're creating a final deliverable
 
-# Save to outputs (final results)
-save_json(final, "result_20250622.json", output_dir="outputs", description="Final")
+# Save to outputs (final results only)
+save_json(final, "result_20250622.json", output_dir="outputs", description="Final Report")
 
-# Load
-data = load_json("cache/step1.json")
+# Load previously saved data
+data = load_json("cache/large_dataset.json")
 ```
 
 #### Structured Extraction (Gemini)
@@ -350,22 +378,42 @@ Keep task-specific logic in scripts.
 ```python
 logger = StepLogger("multi_step_script")
 
-# Step 1
-logger.step("Analyze Inputs", inputs={"files": 10})
+# Step 1 - Log actual file list, not just count
+logger.step("Analyze Inputs", inputs={
+    "files": ["doc1.txt", "doc2.txt", "doc3.txt"]
+})
 # ... analysis logic ...
-logger.output({"analyzed": 10})
+logger.output({
+    "analyses": [
+        {"file": "doc1.txt", "category": "technical", "score": 0.8},
+        {"file": "doc2.txt", "category": "business", "score": 0.6},
+        {"file": "doc3.txt", "category": "technical", "score": 0.9}
+    ]
+})
 
-# Step 2 with progress updates
-logger.step("Process Items", inputs={"count": 100})
-for i in range(100):
-    # ... process item ...
-    logger.update({"progress": f"{i+1}/100"})
-logger.output({"processed": 100})
+# Step 2 - Log actual items and results, use updates for progress
+logger.step("Filter and Process", inputs={
+    "items": [...],  # Actual items
+    "threshold": 0.7
+})
+results = []
+for i, item in enumerate(items):
+    processed = process_item(item)
+    results.append(processed)
+    logger.update({"progress": f"{i+1}/{len(items)}", "current": item.id})
+
+logger.output({
+    "processed": results,  # Actual results with decisions
+    "stats": {"total": len(results), "accepted": 2, "rejected": 1}
+})
 
 # Step 3
 logger.step("Generate Report")
-# ... generation logic ...
-logger.output({"report_path": "..."})
+report = generate_report(results)
+logger.output({
+    "report": report,
+    "saved_to": "outputs/report_20250622.pdf"
+})
 
 # Finalize
 logger.finalize()
@@ -435,10 +483,14 @@ def main():
         return
 
     print(f"🔍 Found {len(text_files)} text files")
-    logger.output({"files_found": len(text_files)})
+    # Log actual file list, not just count
+    logger.output({"files": [str(f) for f in text_files]})
 
     # Step 2: Analyze each file
-    logger.step("Analyze Files", inputs={"count": len(text_files)})
+    # Log actual filenames in inputs
+    logger.step("Analyze Files", inputs={
+        "files": [f.name for f in text_files]
+    })
     results = []
 
     for i, file_path in enumerate(text_files):
@@ -463,18 +515,23 @@ def main():
 
         logger.update({"analyzed": i + 1, "file": file_path.name})
 
-    logger.output({"analyses": results, "total": len(results)})
+    # Log actual analyses with decisions, not just count
+    logger.output({
+        "analyses": results,  # Full results for debugging
+        "stats": {"total": len(results)}
+    })
 
-    # Step 3: Save results
+    # Step 3: Save final output (deliverable)
     logger.step("Save Results")
-    save_json(results, f"analyses_{timestamp}.json",
-              output_dir="cache", description="Text Analyses")
+    final_report = {
+        "timestamp": timestamp,
+        "total_files": len(text_files),
+        "analyses": results
+    }
+    save_json(final_report, f"report_{timestamp}.json",
+              output_dir="outputs", description="Analysis Report")
 
-    summary = {"total_files": len(text_files), "timestamp": timestamp}
-    save_json(summary, f"summary_{timestamp}.json",
-              output_dir="outputs", description="Summary")
-
-    logger.output({"saved": True})
+    logger.output({"report_path": f"outputs/report_{timestamp}.json"})
 
     # Finalize (saves step log with token tracking to cache/)
     logger.finalize()
@@ -490,7 +547,8 @@ if __name__ == "__main__":
 ❌ Don't put imports inline or at the bottom - **always at the top**
 ❌ Don't initialize provider clients directly (anthropic.Anthropic(), genai.Client())
 ❌ Don't save interim steps to `outputs/` (only final results)
-❌ Don't save step logs to `outputs/` (StepLogger auto-saves to `cache/`)
+❌ Don't log summary stats without actual data - include decisions, reasons, extractions
+❌ Don't create separate cache files when data can fit in StepLogger outputs
 ❌ Don't forget to initialize StepLogger and call `.finalize()`
 ❌ Don't use generic step names ("Step 1") - be descriptive
 ❌ Don't hard-code API keys
@@ -503,12 +561,15 @@ if __name__ == "__main__":
 
 When the user asks for a script, write clean, well-structured code that:
 1. **All imports at the top** - never inline
-2. Uses `StepLogger` for step tracking + token tracking
-3. Uses the utils properly (call_anthropic, call_gemini, extract, save_json)
-4. Logs steps with descriptive names, inputs, and outputs
-5. Saves final results to outputs, interim data to cache
-6. Uses Pydantic models for all structured data
-7. Has good visibility (print statements with emojis)
-8. Calls `logger.finalize()` at the end
+2. Uses `StepLogger` as single source of truth - log rich data, not just stats
+3. Logs **actual decisions and data** in inputs/outputs for debugging
+4. Uses the utils properly (call_anthropic, call_gemini, extract)
+5. Uses descriptive step names and passes logger to all LLM calls
+6. Saves final deliverables to outputs (not interim data)
+7. Uses Pydantic models for all structured data
+8. Has good visibility (print statements with emojis)
+9. Calls `logger.finalize()` at the end
+
+**Remember**: StepLogger should contain everything you need to understand what happened and why.
 
 Keep it simple, keep it clean, keep it reusable.

@@ -244,20 +244,22 @@ def main() -> None:
         logger=logger,
     )
 
+    # Log actual queries with reasoning for debugging
     logger.output({
-        "queries": [q.model_dump() for q in queries],
-        "count": len(queries)
+        "queries": [q.model_dump() for q in queries]
     })
 
     # Step 2: Search and evaluate tenders
     logger.step("Search and Evaluate Tenders", inputs={
-        "queries": [q.query for q in queries],
-        "results_per_query": args.results_per_query
+        "queries": [q.model_dump() for q in queries],
+        "results_per_query": args.results_per_query,
+        "target_location": args.location,
+        "company_url": args.url
     })
 
     seen_urls: Set[str] = set()
     qualifying_rows = []
-    all_extractions = []
+    all_evaluations = []  # Track decisions with reasons
     all_results = []
 
     for idx, query in enumerate(queries, start=1):
@@ -285,74 +287,92 @@ def main() -> None:
             )
 
             if extraction is None:
+                all_evaluations.append({
+                    "url": result.url,
+                    "decision": "failed_extraction",
+                    "reason": "Failed to parse extraction from LLM response",
+                    "extraction": None
+                })
                 continue
-
-            # Save all extraction attempts to cache
-            all_extractions.append({
-                "url": result.url,
-                "extraction": extraction.model_dump(),
-            })
 
             # Ensure all gating criteria are satisfied
             recent_by_model = extraction.is_recent
             recent_by_date = within_last_30_days(extraction.published_date)
             location_match = extraction.is_location_match
 
+            # Determine decision and reason
             if not extraction.is_tender:
+                decision = "rejected_not_tender"
+                decision_reason = extraction.reason
                 print(f"   ⏭️ Skipping (not a tender): {extraction.reason}")
-                continue
-
-            if not recent_by_model or not recent_by_date:
+            elif not recent_by_model or not recent_by_date:
+                decision = "rejected_not_recent"
+                decision_reason = f"Published date: {extraction.published_date}, model says recent: {recent_by_model}"
                 print(f"   ⏭️ Skipping (not recent): {extraction.published_date}")
-                continue
-
-            if not location_match:
+            elif not location_match:
+                decision = "rejected_wrong_location"
+                decision_reason = extraction.reason
                 print(f"   ⏭️ Skipping (wrong location): {extraction.reason}")
-                continue
+            else:
+                decision = "accepted"
+                decision_reason = f"Tender matches criteria: {extraction.reason}"
+                qualifying_rows.append(
+                    {
+                        "url": result.url,
+                        "title": extraction.title,
+                        "description": extraction.description,
+                        "published_date": extraction.published_date or "",
+                        "deadline": extraction.deadline or "",
+                        "value_in_gbp": f"{extraction.value_gbp:.2f}" if extraction.value_gbp is not None else "",
+                        "currency": extraction.original_currency
+                        or extraction.currency
+                        or ("GBP" if extraction.value_gbp else ""),
+                        "location": "; ".join(extraction.location),
+                    }
+                )
+                print(f"   ✅ Added tender: {extraction.title}")
 
-            qualifying_rows.append(
-                {
-                    "url": result.url,
-                    "title": extraction.title,
-                    "description": extraction.description,
-                    "published_date": extraction.published_date or "",
-                    "deadline": extraction.deadline or "",
-                    "value_in_gbp": f"{extraction.value_gbp:.2f}" if extraction.value_gbp is not None else "",
-                    "currency": extraction.original_currency
-                    or extraction.currency
-                    or ("GBP" if extraction.value_gbp else ""),
-                    "location": "; ".join(extraction.location),
-                }
-            )
+            # Log all evaluations with decisions and full extraction data
+            all_evaluations.append({
+                "url": result.url,
+                "query": query.query,
+                "decision": decision,
+                "reason": decision_reason,
+                "extraction": extraction.model_dump()
+            })
 
-            print(f"   ✅ Added tender: {extraction.title}")
+        # Update progress after each query with decision breakdown
+        decision_counts = {}
+        for eval in all_evaluations:
+            decision_counts[eval["decision"]] = decision_counts.get(eval["decision"], 0) + 1
 
-        # Update progress after each query
         logger.update({
             "queries_completed": idx,
             "total_results": len(all_results),
-            "total_extractions": len(all_extractions),
-            "qualifying_tenders": len(qualifying_rows)
+            "total_evaluations": len(all_evaluations),
+            "decision_breakdown": decision_counts
         })
 
-    # Save interim data to cache
+    # Save interim search results to cache (too large for StepLogger)
     save_json(
         all_results,
         f"search_results_{timestamp}.json",
         output_dir="cache",
-        description="All search results",
-    )
-    save_json(
-        all_extractions,
-        f"extractions_{timestamp}.json",
-        output_dir="cache",
-        description="All tender extractions",
+        description="All search results with full text",
     )
 
+    # Log all evaluations with decisions and reasons for debugging
     logger.output({
-        "total_results": len(all_results),
-        "total_extractions": len(all_extractions),
-        "qualifying_tenders": len(qualifying_rows)
+        "evaluations": all_evaluations,  # Full extraction data with decisions
+        "summary": {
+            "total_results_fetched": len(all_results),
+            "unique_urls_evaluated": len(all_evaluations),
+            "accepted": len(qualifying_rows),
+            "rejected_not_tender": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_tender"),
+            "rejected_not_recent": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_recent"),
+            "rejected_wrong_location": sum(1 for e in all_evaluations if e["decision"] == "rejected_wrong_location"),
+            "failed_extraction": sum(1 for e in all_evaluations if e["decision"] == "failed_extraction")
+        }
     })
 
     if not qualifying_rows:
@@ -362,7 +382,7 @@ def main() -> None:
 
     # Step 3: Save final CSV
     logger.step("Save Results", inputs={
-        "qualifying_tenders": len(qualifying_rows)
+        "qualifying_tenders": qualifying_rows  # Log actual tender data
     })
 
     # Always save final CSV to outputs directory
@@ -390,7 +410,7 @@ def main() -> None:
 
     logger.output({
         "csv_path": str(output_path),
-        "tenders_saved": len(qualifying_rows)
+        "tenders": qualifying_rows  # Log actual tenders saved to CSV
     })
 
     # Finalize logging

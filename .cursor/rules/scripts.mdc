@@ -10,8 +10,13 @@ alwaysApply: false
 - **Utils**: Reusable code goes in `utils/` (only if used by multiple scripts)
 - **Inputs**: Place input files in `inputs/` directory
 - **Outputs**: Final results only in `outputs/` directory
-- **Cache**: Interim steps, step logs, and token tracking as JSON with timestamps
+- **Cache**: Step logs (with token tracking) automatically saved by StepLogger
 - **Environment**: Store API keys in `.env` file (ANTHROPIC_API_KEY, GEMINI_API_KEY)
+
+**Logging Philosophy:**
+- **StepLogger is your single source of truth** - everything goes there
+- Log **actual data and decisions**, not just summary statistics
+- Only create separate cache files if data is too large or needs reuse
 
 ## Package Management
 - **Install project**: `uv sync` (makes utils/ importable, installs dependencies)
@@ -51,18 +56,36 @@ from utils.step_logger import StepLogger
 - **Finalize**: Call `logger.finalize()` at end (saves to cache/)
 - **Descriptive names**: Use meaningful step names like "Video Analysis" not "Step 1"
 
+**CRITICAL - Log Rich Data:**
+- Log **actual data** in inputs/outputs, not just counts
+- Include **decisions, reasons, and extractions** - everything needed to debug
+- Summary stats are OK as a supplement, but never replace actual data
+- Think: "Can I debug this problem with just the StepLogger JSON?"
+
 ```python
 logger = StepLogger("my_script")
 
-# Start a step
-logger.step("Process Data", inputs={"count": 100})
+# Start a step - log actual inputs
+logger.step("Evaluate Items", inputs={
+    "items": [{"id": 1, "name": "..."}, {"id": 2, "name": "..."}],
+    "threshold": 0.8
+})
 
 # ... do work ...
-for i in range(100):
-    logger.update({"progress": f"{i+1}/100"})
+results = []
+for i, item in enumerate(items):
+    result = evaluate(item)
+    results.append(result)
+    logger.update({"progress": f"{i+1}/{len(items)}", "current": item.id})
 
-# Complete step with outputs
-logger.output({"processed": 100})
+# Log actual results with decisions, not just count
+logger.output({
+    "evaluations": [
+        {"id": 1, "score": 0.9, "decision": "accepted", "reason": "..."},
+        {"id": 2, "score": 0.6, "decision": "rejected", "reason": "..."}
+    ],
+    "stats": {"total": 2, "accepted": 1, "rejected": 1}  # Stats supplement data
+})
 
 # At script end
 logger.finalize()  # Prints summary, saves step log to cache/
@@ -139,22 +162,27 @@ class Result(BaseModel):
 - Automatic serialization/deserialization
 
 ## File I/O Pattern
-- **Cache for interim steps**: Analysis, processing logs, intermediate results, **step logs**
-- **Outputs for finals**: Videos, reports, final artifacts only
+- **StepLogger for all data**: Log everything to StepLogger inputs/outputs (single source of truth)
+- **Outputs for final deliverables**: Videos, reports, final artifacts only
 - **IMPORTANT**: Step logs (with token tracking) ALWAYS go to `cache/` (automatic)
+- **Avoid separate cache files**: Only create if data is too large or needs reuse
 - **Always timestamp**: Use `datetime.now().strftime("%Y%m%d_%H%M%S")`
-- **Use utils**: `save_json()` and `load_json()` for consistency
 
 ```python
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# Interim step to cache
-save_json(data, f"analysis_{timestamp}.json", output_dir="cache", description="Analysis")
+# PREFER: Log to StepLogger instead of separate files
+logger.step("Analyze Data", inputs={"items": [...]})
+logger.output({"results": [...]})  # All data here for debugging
 
-# Final result to outputs
-save_json(final, f"result_{timestamp}.json", output_dir="outputs", description="Final")
+# ONLY create separate files for:
+# 1. Final deliverables
+save_json(final, f"report_{timestamp}.json", output_dir="outputs", description="Final Report")
 
-# Step log with token tracking saves automatically to cache/
+# 2. Very large data (page text, images, etc.)
+# 3. Data that needs to be reused by another process
+
+# Step log with ALL your data saves automatically to cache/
 logger.finalize()
 ```
 
@@ -260,6 +288,8 @@ except Exception as e:
 - ❌ Don't put imports inline or at bottom - **ALWAYS at top**
 - ❌ Don't initialize provider clients directly (anthropic.Anthropic(), genai.Client())
 - ❌ Don't save interim steps to `outputs/` (only finals)
+- ❌ Don't log summary stats without actual data - include decisions, reasons, extractions
+- ❌ Don't create separate cache files when data fits in StepLogger outputs
 - ❌ Don't forget to initialize StepLogger and call `.finalize()`
 - ❌ Don't use generic step names ("Step 1", "LLM Call") - be descriptive
 - ❌ Don't hard-code API keys - use env vars
