@@ -162,7 +162,7 @@ Highlights: {highlights}"""
             text=text,
             schema=TenderExtraction,
             prompt=prompt,
-            tracker=logger,
+            logger=logger,
             step_name="Evaluate Tender",
         )
         return extraction
