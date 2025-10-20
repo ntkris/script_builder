@@ -99,7 +99,7 @@ Return only structured JSON matching the specified schema."""
             text="",
             schema=QueryPlan,
             prompt=prompt,
-            tracker=logger,
+            logger=logger,
             step_name="Generate Tender Queries",
         )
         print(f"✅ Generated {len(plan.queries)} queries")
