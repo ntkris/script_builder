@@ -3,25 +3,19 @@
 
 import argparse
 import csv
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Set
-
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
-
-# Ensure project root is on path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from utils import (  # noqa: E402
-    TokenTracker,
+from utils import (
+    StepLogger,
     search_exa,
     SearchResult,
     save_json,
     extract,
 )
-
+load_dotenv()
 
 class SearchQuery(BaseModel):
     """Individual search query produced by Gemini."""
@@ -80,7 +74,7 @@ def generate_search_queries(
     location: str,
     description: str,
     max_queries: int,
-    tracker: TokenTracker,
+    logger: StepLogger,
 ) -> List[SearchQuery]:
     """Use Gemini to craft targeted procurement search queries."""
 
@@ -105,7 +99,7 @@ Return only structured JSON matching the specified schema."""
             text="",
             schema=QueryPlan,
             prompt=prompt,
-            tracker=tracker,
+            tracker=logger,
             step_name="Generate Tender Queries",
         )
         print(f"✅ Generated {len(plan.queries)} queries")
@@ -130,7 +124,7 @@ def evaluate_search_result(
     company_url: str,
     location: str,
     description: str,
-    tracker: TokenTracker,
+    logger: StepLogger,
 ) -> Optional[TenderExtraction]:
     """Determine whether a search result is a viable tender and extract key facts."""
 
@@ -168,7 +162,7 @@ Highlights: {highlights}"""
             text=text,
             schema=TenderExtraction,
             prompt=prompt,
-            tracker=tracker,
+            tracker=logger,
             step_name="Evaluate Tender",
         )
         return extraction
@@ -232,24 +226,34 @@ def main() -> None:
 
     load_dotenv()
 
-    tracker = TokenTracker()
+    logger = StepLogger("tender_finder")
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    # Step 1: Generate search queries
+    logger.step("Generate Search Queries", inputs={
+        "company_url": args.url,
+        "location": args.location,
+        "max_queries": args.max_queries
+    })
 
     queries = generate_search_queries(
         company_url=args.url,
         location=args.location,
         description=args.text,
         max_queries=args.max_queries,
-        tracker=tracker,
+        logger=logger,
     )
 
-    # Save generated queries to cache
-    save_json(
-        [q.model_dump() for q in queries],
-        f"queries_{timestamp}.json",
-        output_dir="cache",
-        description="Generated search queries",
-    )
+    logger.output({
+        "queries": [q.model_dump() for q in queries],
+        "count": len(queries)
+    })
+
+    # Step 2: Search and evaluate tenders
+    logger.step("Search and Evaluate Tenders", inputs={
+        "queries": [q.query for q in queries],
+        "results_per_query": args.results_per_query
+    })
 
     seen_urls: Set[str] = set()
     qualifying_rows = []
@@ -277,7 +281,7 @@ def main() -> None:
                 company_url=args.url,
                 location=args.location,
                 description=args.text,
-                tracker=tracker,
+                logger=logger,
             )
 
             if extraction is None:
@@ -323,15 +327,21 @@ def main() -> None:
 
             print(f"   ✅ Added tender: {extraction.title}")
 
-    # Save search results to cache
+        # Update progress after each query
+        logger.update({
+            "queries_completed": idx,
+            "total_results": len(all_results),
+            "total_extractions": len(all_extractions),
+            "qualifying_tenders": len(qualifying_rows)
+        })
+
+    # Save interim data to cache
     save_json(
         all_results,
         f"search_results_{timestamp}.json",
         output_dir="cache",
         description="All search results",
     )
-
-    # Save extraction results to cache
     save_json(
         all_extractions,
         f"extractions_{timestamp}.json",
@@ -339,11 +349,21 @@ def main() -> None:
         description="All tender extractions",
     )
 
+    logger.output({
+        "total_results": len(all_results),
+        "total_extractions": len(all_extractions),
+        "qualifying_tenders": len(qualifying_rows)
+    })
+
     if not qualifying_rows:
         print("\nNo qualifying tenders were found.")
-        # Still save token summary even if no results
-        tracker.save_summary("tender_finder", output_dir="cache")
+        logger.finalize()
         return
+
+    # Step 3: Save final CSV
+    logger.step("Save Results", inputs={
+        "qualifying_tenders": len(qualifying_rows)
+    })
 
     # Always save final CSV to outputs directory
     output_dir = Path("outputs")
@@ -368,8 +388,13 @@ def main() -> None:
 
     print(f"\n📄 Saved {len(qualifying_rows)} tenders to {output_path}")
 
-    # Save token tracking summary to cache
-    tracker.save_summary("tender_finder", output_dir="cache")
+    logger.output({
+        "csv_path": str(output_path),
+        "tenders_saved": len(qualifying_rows)
+    })
+
+    # Finalize logging
+    logger.finalize()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""AI Video Editor - Generate short highlight videos from longer content"""
+
 import os
 import sys
 import subprocess
@@ -11,12 +14,11 @@ from typing import List, Optional, Dict
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 import xmltodict
-
-# Add parent directory to path for utils import
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import save_json, load_json, TokenTracker, AIRequest, AnthropicModel, call_anthropic
+from utils import save_json, StepLogger, AIRequest, AnthropicModel, call_anthropic
 
 load_dotenv()
+
+
 
 # AI Video Editor Configuration
 TARGET_DURATION = 10.0  # seconds - target length of final video
@@ -91,9 +93,6 @@ class ClipSelection(BaseModel):
     selected_clips: List[SelectedClip] = Field(default_factory=list)
     total_duration: float
     target_duration: float
-
-# Global token tracking
-token_tracker = TokenTracker()
 
 def log_error_and_exit(message: str, exit_code: int = 1):
     """Simple error logging that exits immediately"""
@@ -173,7 +172,7 @@ def encode_image_to_base64(image_path: str) -> str:
     with open(image_path, 'rb') as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def analyze_video_frames(video_path: str, frame_interval: float = 5, max_frames: int = 10, video_id: str = "") -> VideoAnalysisResult:
+def analyze_video_frames(video_path: str, logger: StepLogger, frame_interval: float = 5, max_frames: int = 10, video_id: str = "") -> VideoAnalysisResult:
     """Analyze video by extracting frames and using Claude's vision capabilities"""
     
     print(f"\n🔍 Analyzing: {Path(video_path).name}")
@@ -232,7 +231,7 @@ def analyze_video_frames(video_path: str, frame_interval: float = 5, max_frames:
             max_tokens=2000,
             step_name="Video Analysis"
         )
-        response = call_anthropic(request, token_tracker)
+        response = call_anthropic(request, logger)
 
         # Print raw LLM output
         raw_response = response.content
@@ -303,7 +302,7 @@ def analyze_video_frames(video_path: str, frame_interval: float = 5, max_frames:
         print("✅ Analysis completed!")
         return result
 
-def select_clips_from_analysis(analysis_result: VideoAnalysisResult, target_duration: float, video_id_map: Dict[str, str], min_clip_length: float = 2.0, max_clip_length: float = 8.0) -> ClipSelection:
+def select_clips_from_analysis(analysis_result: VideoAnalysisResult, target_duration: float, video_id_map: Dict[str, str], logger: StepLogger, min_clip_length: float = 2.0, max_clip_length: float = 8.0) -> ClipSelection:
     """Select optimal clips from video analysis using Claude Sonnet 4"""
     if not analysis_result.success or not analysis_result.analysis:
         return ClipSelection(
@@ -377,7 +376,7 @@ Focus on action, movement, technique, and dynamic moments. Avoid static position
         max_tokens=1500,
         step_name="Clip Selection"
     )
-    response = call_anthropic(request, token_tracker)
+    response = call_anthropic(request,  logger)
 
     # Print raw LLM output
     raw_response = response.content
@@ -566,7 +565,7 @@ def execute_processing_plan(plan_result: ExecutionPlanResult) -> bool:
 def main() -> None:
     if not os.getenv("ANTHROPIC_API_KEY"):
         log_error_and_exit("ANTHROPIC_API_KEY not found. Create .env file with your API key")
-    
+
     # Configuration - now supports multiple input files
     INPUT_FILES = [
         "inputs/recipe_1.mov",
@@ -575,7 +574,7 @@ def main() -> None:
     FRAME_INTERVAL = 10.0
     MAX_FRAMES = 10
     USER_PROMPT = "Create a 10 second highlight reel of the most interesting moments from all videos"
-    
+
     # Check input files exist
     valid_files = []
     for input_file in INPUT_FILES:
@@ -584,52 +583,80 @@ def main() -> None:
             print(f"✅ Found: {input_file}")
         else:
             print(f"⚠️ Not found: {input_file}")
-    
+
     if not valid_files:
         log_error_and_exit("No valid input files found")
-    
+
     INPUT_FILES = valid_files
     print(f"\n🎬 Processing {len(INPUT_FILES)} video(s)")
-    
+
+    # Initialize logger
+    logger = StepLogger("video_generator")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     # Create video ID map
     video_id_map: Dict[str, str] = {}  # video_id -> video_path
     path_to_id_map: Dict[str, str] = {}  # video_path -> video_id
-    
+
     for video_path in INPUT_FILES:
         video_id = str(uuid.uuid4())[:8]  # Short UUID
         video_id_map[video_id] = video_path
         path_to_id_map[video_path] = video_id
         print(f"🆔 {Path(video_path).name} -> {video_id}")
-    
+
     # Create outputs directory
     Path("outputs").mkdir(exist_ok=True)
-    
+
     # Step 1: Analyze all videos
+    logger.step("Analyze Videos", inputs={
+        "input_files": INPUT_FILES,
+        "frame_interval": FRAME_INTERVAL,
+        "max_frames": MAX_FRAMES
+    })
+
     all_analyses = []
     for i, input_file in enumerate(INPUT_FILES, 1):
         print(f"\n📊 Analyzing video {i}/{len(INPUT_FILES)}: {Path(input_file).name}")
-        analysis_result = analyze_video_frames(input_file, FRAME_INTERVAL, MAX_FRAMES, path_to_id_map[input_file])
-        
+        analysis_result = analyze_video_frames(input_file, logger, FRAME_INTERVAL, MAX_FRAMES, path_to_id_map[input_file])
+
         if not analysis_result.success:
             print(f"❌ Analysis failed for {input_file}: {analysis_result.error}")
             continue
-            
+
         all_analyses.append(analysis_result)
-    
+
+        # Update progress
+        logger.update({
+            "videos_analyzed": i,
+            "successful": len(all_analyses),
+            "failed": i - len(all_analyses)
+        })
+
     if not all_analyses:
+        logger.fail(Exception("No videos could be analyzed"))
         log_error_and_exit("No videos could be analyzed")
-    
+
     print(f"✅ Successfully analyzed {len(all_analyses)}/{len(INPUT_FILES)} videos")
-    
-    # Step 2: Combine all analysis results into one for clip selection
+
+    logger.output({
+        "total_videos": len(INPUT_FILES),
+        "analyzed": len(all_analyses),
+        "failed": len(INPUT_FILES) - len(all_analyses)
+    })
+
+    # Step 2: Combine analysis results
+    logger.step("Combine Analysis Results", inputs={
+        "analyses_count": len(all_analyses)
+    })
+
     combined_frames = []
     for analysis in all_analyses:
         if analysis.analysis and analysis.analysis.frames:
             combined_frames.extend(analysis.analysis.frames)
-    
+
     # Create combined analysis result for clip selection
     combined_summary = " | ".join([a.analysis.overall_summary for a in all_analyses if a.analysis])
-    
+
     combined_analysis = VideoAnalysisResult(
         video_path="combined_videos",
         frames_analyzed=sum(a.frames_analyzed for a in all_analyses),
@@ -640,25 +667,54 @@ def main() -> None:
         ),
         success=True
     )
-    
-    # Step 3: Select clips from combined analysis  
-    clip_selection = select_clips_from_analysis(combined_analysis, TARGET_DURATION, video_id_map, MIN_CLIP_LENGTH, MAX_CLIP_LENGTH)
-    
+
+    logger.output({
+        "total_frames": len(combined_frames),
+        "summary": combined_summary
+    })
+
+    # Step 3: Select clips from combined analysis
+    logger.step("Select Clips", inputs={
+        "target_duration": TARGET_DURATION,
+        "min_clip_length": MIN_CLIP_LENGTH,
+        "max_clip_length": MAX_CLIP_LENGTH
+    })
+
+    clip_selection = select_clips_from_analysis(combined_analysis, TARGET_DURATION, video_id_map, logger, MIN_CLIP_LENGTH, MAX_CLIP_LENGTH)
+
     if not clip_selection.selected_clips:
+        logger.fail(Exception("No clips could be selected"))
         log_error_and_exit("No clips could be selected from the combined analysis")
-    
-    # Step 4: Generate execution plan for multi-video stitching
+
+    logger.output({
+        "clips_selected": len(clip_selection.selected_clips),
+        "total_duration": clip_selection.total_duration
+    })
+
+    # Step 4: Generate execution plan
+    logger.step("Generate Execution Plan", inputs={
+        "clips_count": len(clip_selection.selected_clips)
+    })
+
     plan_result = generate_execution_plan("combined_videos", USER_PROMPT, combined_analysis, clip_selection, video_id_map)
-    
+
     if not plan_result.success:
+        logger.fail(Exception(f"Plan generation failed: {plan_result.error}"))
         log_error_and_exit(f"Plan generation failed: {plan_result.error}")
-    
+
+    logger.output({
+        "steps_count": len(plan_result.plan.steps) if plan_result.plan else 0,
+        "output_file": plan_result.plan.final_output if plan_result.plan else None
+    })
+
     # Step 5: Display results
     display_results(combined_analysis, plan_result, clip_selection)
-    
-    # Step 6: Save combined results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
+    # Step 6: Save results
+    logger.step("Save Results", inputs={
+        "analyses": len(all_analyses)
+    })
+
     # Save individual analyses
     for analysis in all_analyses:
         video_name = Path(analysis.video_path).stem
@@ -667,7 +723,7 @@ def main() -> None:
             "video_analysis": analysis.model_dump()
         }
         save_json(analysis_data, f"analysis_{video_name}_{timestamp}.json", output_dir="cache", description=f"Analysis ({video_name})")
-    
+
     # Save combined analysis
     combined_data = {
         "generated_at": datetime.now().isoformat(),
@@ -675,30 +731,44 @@ def main() -> None:
         "source_videos": [a.video_path for a in all_analyses]
     }
     save_json(combined_data, f"combined_analysis_{timestamp}.json", output_dir="cache", description="Combined Analysis")
-    
+
     # Save clip selection
     clip_data = {
         "generated_at": datetime.now().isoformat(),
         "clip_selection": clip_selection.model_dump()
     }
     save_json(clip_data, f"clips_combined_{timestamp}.json", output_dir="cache", description="Clip Selection")
-    
+
     # Save execution plan
     plan_data = {
         "generated_at": datetime.now().isoformat(),
         "execution_plan": plan_result.model_dump()
     }
     save_json(plan_data, f"plan_combined_{timestamp}.json", output_dir="cache", description="Plan")
-    
-    # Step 7: Execute plan automatically
+
+    logger.output({
+        "files_saved": 3 + len(all_analyses)
+    })
+
+    # Step 7: Execute plan
+    logger.step("Execute Processing Plan", inputs={
+        "steps": len(plan_result.plan.steps) if plan_result.plan else 0
+    })
+
     success = execute_processing_plan(plan_result)
-    
-    # Save token consumption
-    token_tracker.save_summary("combined_videos", output_dir="cache", user_prompt=USER_PROMPT)
-    
+
     if not success:
+        logger.fail(Exception("Processing failed"))
         log_error_and_exit("Processing failed")
-    
+
+    logger.output({
+        "success": success,
+        "output_file": plan_result.plan.final_output if plan_result.plan else None
+    })
+
+    # Finalize logging
+    logger.finalize()
+
     print("\n🎉 Multi-video session completed!")
 
 if __name__ == "__main__":

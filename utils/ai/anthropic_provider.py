@@ -1,12 +1,12 @@
 """Anthropic Claude provider implementation"""
 
-from typing import Optional, List, Type
+from typing import Optional, List
 import os
 import json
 import anthropic
 import xmltodict
-from pydantic import BaseModel
-from .base import AIRequest, AIResponse, Provider, ToolCall, TokenTracker
+from .base import AIRequest, AIResponse, Provider, ToolCall
+from ..step_logger import StepLogger
 
 
 def _generate_json_schema_prompt(schema) -> str:
@@ -26,7 +26,7 @@ def _generate_json_schema_prompt(schema) -> str:
 
 def call_anthropic(
     request: AIRequest,
-    token_tracker: Optional[TokenTracker] = None,
+    logger: Optional[StepLogger] = None,
     api_key: Optional[str] = None
 ) -> AIResponse:
     """
@@ -34,16 +34,17 @@ def call_anthropic(
 
     Args:
         request: AIRequest with parameters
-        token_tracker: Optional TokenTracker for automatic tracking
+        logger: Optional StepLogger for automatic token tracking
         api_key: Optional API key (defaults to ANTHROPIC_API_KEY env var)
 
     Returns:
         AIResponse with normalized response data
 
     Example:
-        from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker
+        from utils import call_anthropic, AIRequest, AnthropicModel
+        from utils.step_logger import StepLogger
 
-        tracker = TokenTracker()
+        logger = StepLogger("my_script")
 
         request = AIRequest(
             messages=[{"role": "user", "content": "Hello!"}],
@@ -51,7 +52,7 @@ def call_anthropic(
             max_tokens=1000,
             step_name="Greeting"
         )
-        response = call_anthropic(request, tracker)
+        response = call_anthropic(request, logger)
         print(response.content)
     """
     # Initialize client with API key
@@ -173,8 +174,8 @@ def call_anthropic(
         raw_response=message
     )
 
-    # Automatic token tracking
-    if token_tracker:
-        token_tracker.track(request.step_name, ai_response)
+    # Automatic token tracking with StepLogger
+    if logger:
+        logger.track(request.step_name, ai_response)
 
     return ai_response

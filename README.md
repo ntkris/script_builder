@@ -3,20 +3,21 @@
 Lightweight prototyping environment for AI-powered scripts. Built for rapid experimentation with a focus on:
 - **Minimal setup**: Just `uv` for package management
 - **Reusable utilities**: Common LLM and I/O operations abstracted
-- **Automatic logging**: All LLM calls tracked, interim steps saved to cache
-- **Multi-provider support**: Universal interface for Anthropic, OpenAI, and more
+- **Automatic step logging**: StepLogger tracks steps, token usage, and progress
+- **Multi-provider support**: Universal interface for Anthropic, Gemini, and more
 
 ## Quick Start
 
 1. **Setup environment:**
    ```bash
-   # Create .env file
+   # Create .env file with API keys
    echo "ANTHROPIC_API_KEY=your_key_here" > .env
+   echo "GEMINI_API_KEY=your_key_here" >> .env
    ```
 
-2. **Install dependencies:**
+2. **Install project:**
    ```bash
-   uv add package_name
+   uv sync  # Installs dependencies and makes utils/ importable
    ```
 
 3. **Run scripts:**
@@ -32,93 +33,161 @@ script_builder/
 ├── utils/                 # Reusable utilities
 │   ├── ai/               # LLM provider interface (multi-provider)
 │   │   ├── base.py       # Base models and enums
-│   │   ├── anthropic_provider.py
+│   │   ├── anthropic_provider.py  # call_anthropic()
+│   │   ├── gemini_provider.py     # call_gemini()
 │   │   └── README.md     # Detailed AI usage docs
+│   ├── tools/            # Common tools (search, extraction)
 │   ├── io.py             # save_json, load_json helpers
-│   └── token_tracking.py # TokenTracker for usage monitoring
+│   └── step_logger.py    # StepLogger for step tracking + token usage
 ├── inputs/                # Input files (videos, images, data)
 ├── outputs/               # Final results only
-├── cache/                 # Interim processing steps (JSON logs)
+├── cache/                 # Interim processing steps (JSON logs, step logs)
 ├── .env                   # API keys (gitignored)
-└── pyproject.toml         # Dependencies managed by uv
+└── pyproject.toml         # Project config (makes utils/ importable)
 ```
 
 ## Core Principles
 
 1. **Scripts in `scripts/`**: All executable scripts go in the scripts directory
-2. **Interim steps → `cache/`**: Save processing logs, intermediate results as JSON
-3. **Final results → `outputs/`**: Only final artifacts (videos, reports, etc.)
-4. **Reusable code → `utils/`**: Extract common patterns, avoid duplication
-5. **Automatic tracking**: All LLM calls automatically logged with token usage
+2. **Imports at the top**: Always put imports at the top of files, never inline
+3. **Use StepLogger**: Track steps, progress, and token usage automatically
+4. **Interim steps → `cache/`**: Save processing logs, step logs, intermediate results
+5. **Final results → `outputs/`**: Only final artifacts (videos, reports, etc.)
+6. **Reusable code → `utils/`**: Extract common patterns, avoid duplication
 
 ## Usage Examples
 
 ### Basic Script Structure
 
+**IMPORTANT: Always put imports at the top. Never use inline imports.**
+
 ```python
-import sys
+#!/usr/bin/env python3
+"""Script description"""
+
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
 
-# Add parent to path for utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker, save_json
+load_dotenv()
 
-# Initialize token tracker
-tracker = TokenTracker()
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+from utils import call_anthropic, AIRequest, AnthropicModel, save_json
+from utils.step_logger import StepLogger
 
-# Make LLM call with automatic token tracking
-request = AIRequest(
-    messages=[{"role": "user", "content": "Analyze this data..."}],
-    model=AnthropicModel.CLAUDE_SONNET_4,
-    max_tokens=1000,
-    step_name="Data Analysis"
-)
-response = call_anthropic(request, tracker)
+def main():
+    # Initialize step logger
+    logger = StepLogger("my_script")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# Save interim step to cache
-save_json(
-    {"analysis": response.content, "timestamp": timestamp},
-    f"analysis_{timestamp}.json",
-    output_dir="cache",
-    description="Analysis Step"
-)
+    # Step 1: Process data
+    logger.step("Analyze Data", inputs={"source": "data.csv"})
 
-# Save token usage summary
-tracker.save_summary("my_script", output_dir="cache")
+    request = AIRequest(
+        messages=[{"role": "user", "content": "Analyze this data..."}],
+        model=AnthropicModel.CLAUDE_SONNET_4,
+        max_tokens=1000,
+        step_name="Data Analysis"
+    )
+    response = call_anthropic(request, logger)  # Automatic token tracking
+
+    logger.output({"analysis": response.content})
+
+    # Step 2: Save results
+    logger.step("Save Results")
+    save_json(
+        {"analysis": response.content, "timestamp": timestamp},
+        f"analysis_{timestamp}.json",
+        output_dir="outputs",
+        description="Final Analysis"
+    )
+    logger.output({"saved": True})
+
+    # Finalize - prints summary and saves step log to cache/
+    logger.finalize()
+
+if __name__ == "__main__":
+    main()
+```
+
+### Step Logging
+
+```python
+from utils.step_logger import StepLogger
+
+logger = StepLogger("my_script")
+
+# Start a step
+logger.step("Process Data", inputs={"count": 100})
+
+# Log progress during loops
+for i in range(100):
+    # ... do work ...
+    logger.update({"progress": f"{i+1}/100"})
+
+# Mark step complete with outputs
+logger.output({"processed": 100, "errors": 0})
+
+# At the end of script
+logger.finalize()  # Prints summary, saves to cache/
 ```
 
 ### AI/LLM Calls
 
 ```python
-from utils import call_anthropic, AIRequest, AnthropicModel, TokenTracker
+from utils import call_anthropic, call_gemini, AIRequest
+from utils import AnthropicModel, GeminiModel, Provider
+from utils.step_logger import StepLogger
 
-tracker = TokenTracker()
+logger = StepLogger("my_script")
 
-# Simple request
+# Anthropic Claude
 request = AIRequest(
     messages=[{"role": "user", "content": "Hello!"}],
     model=AnthropicModel.CLAUDE_SONNET_4,
     max_tokens=100,
     step_name="Greeting"
 )
-response = call_anthropic(request, tracker)
+response = call_anthropic(request, logger)  # Token tracking automatic
 print(response.content)
 
-# With system prompt and temperature
+# Google Gemini
 request = AIRequest(
     messages=[{"role": "user", "content": "Explain quantum physics"}],
-    model=AnthropicModel.CLAUDE_SONNET_4,
+    model=GeminiModel.GEMINI_2_5_FLASH,
+    provider=Provider.GOOGLE,
     max_tokens=500,
     system="You are a physics professor. Be concise.",
     temperature=0.7,
     step_name="Physics Explanation"
 )
-response = call_anthropic(request, tracker)
+response = call_gemini(request, logger)
 
-# API key automatically loaded from ANTHROPIC_API_KEY env var
-# Override with: call_anthropic(request, tracker, api_key="custom_key")
+# API keys automatically loaded from env vars
+```
+
+### Structured Extraction
+
+```python
+from utils import extract
+from pydantic import BaseModel
+from typing import List
+
+class Product(BaseModel):
+    name: str
+    price: float
+    category: str
+
+# Extract structured data using Gemini
+products = extract(
+    text="Apple iPhone costs $999 in electronics...",
+    schema=Product,
+    logger=logger,
+    return_list=True,
+    step_name="Extract Products"
+)
+
+for product in products:
+    print(f"{product.name}: ${product.price}")
 ```
 
 ### Saving/Loading Data
@@ -146,42 +215,38 @@ save_json(
 data = load_json("cache/step1.json")
 ```
 
-### Token Tracking
-
-```python
-from utils import TokenTracker
-
-tracker = TokenTracker()
-
-# Make multiple LLM calls...
-# (tracking happens automatically if you pass tracker to call_anthropic)
-
-# Get total usage
-total = tracker.get_total_usage()
-print(f"Total tokens: {total.total_tokens}")
-
-# Save detailed summary to cache
-tracker.save_summary("my_script", output_dir="cache")
-```
 
 ## Available Models
 
 ### Anthropic
-- `AnthropicModel.CLAUDE_OPUS_4`
-- `AnthropicModel.CLAUDE_SONNET_4`
-- `AnthropicModel.CLAUDE_SONNET_3_5`
-- `AnthropicModel.CLAUDE_3_OPUS`
-- `AnthropicModel.CLAUDE_3_SONNET`
-- `AnthropicModel.CLAUDE_3_HAIKU`
+- `AnthropicModel.CLAUDE_OPUS_4` - Best quality
+- `AnthropicModel.CLAUDE_SONNET_4` - Balanced (recommended)
+- `AnthropicModel.CLAUDE_SONNET_3_5` - Previous generation
+- `AnthropicModel.CLAUDE_3_HAIKU` - Fast, cheap
+
+### Google Gemini
+- `GeminiModel.GEMINI_2_5_PRO` - Latest, best quality
+- `GeminiModel.GEMINI_2_5_FLASH` - Latest, fast (recommended)
+- `GeminiModel.GEMINI_2_5_FLASH_LITE` - Latest, very fast
+- `GeminiModel.GEMINI_2_0_FLASH` - Previous generation
 
 ### OpenAI (coming soon)
 - `OpenAIModel.GPT_4O`
 - `OpenAIModel.GPT_4O_MINI`
 
+## Key Patterns
+
+- **Always import at top**: Never use inline imports
+- **Use StepLogger**: Track all steps and LLM calls
+- **Pydantic models**: For all structured data
+- **Error handling**: Use `logger.fail(exception)` for failures
+- **Progress updates**: Use `logger.update()` in loops
+- **Cache vs Outputs**: Interim data → cache/, final results → outputs/
+
 ## Advanced Features
 
 See `utils/ai/README.md` for:
 - Tool/function calling
-- Streaming responses
+- Structured output (JSON mode)
 - Multi-turn conversations
-- Custom providers
+- Vision API usage

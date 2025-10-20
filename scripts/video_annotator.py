@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Video Annotator Script
 Analyzes a video using Gemini 2.5 Flash and overlays annotations based on a user prompt.
@@ -14,12 +15,11 @@ from datetime import datetime
 from typing import List, Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
-# Add parent directory to path for utils import
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import save_json, TokenTracker, AIRequest, GeminiModel, Provider, call_gemini
+from utils import save_json, StepLogger, AIRequest, GeminiModel, Provider, call_gemini
 
 load_dotenv()
+
+
 
 
 # Pydantic Models
@@ -47,10 +47,6 @@ class AnnotationResult(BaseModel):
     analysis: Optional[VideoAnalysisWithAnnotations] = None
     error: Optional[str] = None
     success: bool
-
-
-# Global token tracking
-token_tracker = TokenTracker()
 
 
 def log_error_and_exit(message: str, exit_code: int = 1):
@@ -130,7 +126,7 @@ def encode_image_to_base64(image_path: str) -> str:
 
 
 def analyze_and_annotate_video(
-    video_path: str, user_prompt: str, frame_interval: float = 5, max_frames: int = 10
+    video_path: str, user_prompt: str, logger: StepLogger, frame_interval: float = 5, max_frames: int = 10
 ) -> AnnotationResult:
     """Analyze video using Gemini and generate annotations based on user prompt"""
 
@@ -239,7 +235,7 @@ have access to the actual frame images."""
             response_schema=VideoAnalysisWithAnnotations,
         )
 
-        response = call_gemini(request, token_tracker)
+        response = call_gemini(request, logger)
 
         # Print raw LLM output
         print(f"\n🤖 GEMINI ANALYSIS RESPONSE:")
@@ -424,20 +420,41 @@ def main() -> None:
     Path("outputs").mkdir(exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    video_name = Path(VIDEO_PATH).stem
+
+    # Initialize logger
+    logger = StepLogger(f"video_annotator_{video_name}")
 
     # Step 1: Analyze video and generate annotations
+    logger.step("Analyze Video and Generate Annotations", inputs={
+        "video_path": VIDEO_PATH,
+        "user_prompt": USER_PROMPT,
+        "frame_interval": FRAME_INTERVAL,
+        "max_frames": MAX_FRAMES
+    })
+
     annotation_result = analyze_and_annotate_video(
-        VIDEO_PATH, USER_PROMPT, FRAME_INTERVAL, MAX_FRAMES
+        VIDEO_PATH, USER_PROMPT, logger, FRAME_INTERVAL, MAX_FRAMES
     )
 
     if not annotation_result.success:
+        logger.fail(Exception(annotation_result.error))
         log_error_and_exit(f"Analysis failed: {annotation_result.error}")
+
+    logger.output({
+        "frames_analyzed": annotation_result.frames_analyzed,
+        "annotations_generated": len(annotation_result.analysis.annotations) if annotation_result.analysis else 0,
+        "success": annotation_result.success
+    })
 
     # Step 2: Display results
     display_results(annotation_result)
 
     # Step 3: Save analysis to cache
-    video_name = Path(VIDEO_PATH).stem
+    logger.step("Save Analysis to Cache", inputs={
+        "video_name": video_name
+    })
+
     analysis_data = {
         "generated_at": datetime.now().isoformat(),
         "annotation_result": annotation_result.model_dump(),
@@ -449,17 +466,31 @@ def main() -> None:
         description=f"Annotations ({video_name})",
     )
 
+    logger.output({
+        "cache_file": f"annotations_{video_name}_{timestamp}.json"
+    })
+
     # Step 4: Create annotated video
+    logger.step("Create Annotated Video", inputs={
+        "output_path": f"outputs/annotated_{video_name}_{timestamp}.mp4"
+    })
+
     output_video_path = f"outputs/annotated_{video_name}_{timestamp}.mp4"
     success = create_annotated_video(VIDEO_PATH, annotation_result, output_video_path)
 
-    # Step 5: Save token tracking to cache
-    token_tracker.save_summary(VIDEO_PATH, output_dir="cache", user_prompt=USER_PROMPT)
-
-    if success:
-        print(f"\n🎉 Success! Annotated video saved to: {output_video_path}")
-    else:
+    if not success:
+        logger.fail(Exception("Failed to create annotated video"))
         log_error_and_exit("Failed to create annotated video")
+
+    logger.output({
+        "output_video_path": output_video_path,
+        "success": success
+    })
+
+    # Finalize logging
+    logger.finalize()
+
+    print(f"\n🎉 Success! Annotated video saved to: {output_video_path}")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,16 @@
 """Google Gemini provider implementation"""
 
-from typing import Optional, List
+from typing import Optional
 import os
 from google import genai
 from google.genai import types
-from .base import AIRequest, AIResponse, Provider, ToolCall, TokenTracker
+from .base import AIRequest, AIResponse, Provider, ToolCall
+from ..step_logger import StepLogger
 
 
 def call_gemini(
     request: AIRequest,
-    token_tracker: Optional[TokenTracker] = None,
+    logger: Optional[StepLogger] = None,
     api_key: Optional[str] = None
 ) -> AIResponse:
     """
@@ -17,25 +18,26 @@ def call_gemini(
 
     Args:
         request: AIRequest with parameters
-        token_tracker: Optional TokenTracker for automatic tracking
+        logger: Optional StepLogger for automatic token tracking
         api_key: Optional API key (defaults to GEMINI_API_KEY env var)
 
     Returns:
         AIResponse with normalized response data
 
     Example:
-        from utils import call_gemini, AIRequest, GeminiModel, TokenTracker
+        from utils import call_gemini, AIRequest, GeminiModel, Provider
+        from utils.step_logger import StepLogger
 
-        tracker = TokenTracker()
+        logger = StepLogger("my_script")
 
         request = AIRequest(
             messages=[{"role": "user", "content": "Hello!"}],
-            model=GeminiModel.GEMINI_2_0_FLASH,
+            model=GeminiModel.GEMINI_2_5_FLASH,
             max_tokens=1000,
             step_name="Greeting",
             provider=Provider.GOOGLE
         )
-        response = call_gemini(request, tracker)
+        response = call_gemini(request, logger)
         print(response.content)
     """
     # Initialize client with API key
@@ -153,8 +155,8 @@ def call_gemini(
         raw_response=response
     )
 
-    # Automatic token tracking
-    if token_tracker:
-        token_tracker.track(request.step_name, ai_response)
+    # Automatic token tracking with StepLogger
+    if logger:
+        logger.track(request.step_name, ai_response)
 
     return ai_response

@@ -4,8 +4,9 @@ from typing import Type, TypeVar, List, Union, Optional
 from pydantic import BaseModel, ValidationError
 import json
 
-from ..ai.base import AIRequest, Provider, GeminiModel, TokenTracker
+from ..ai.base import AIRequest, Provider, GeminiModel
 from ..ai.gemini_provider import call_gemini
+from ..step_logger import StepLogger
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -14,7 +15,7 @@ def extract(
     text: str,
     schema: Type[T],
     prompt: str = "Extract structured data from the following text:",
-    tracker: Optional[TokenTracker] = None,
+    logger: Optional[StepLogger] = None,
     return_list: bool = False,
     step_name: str = "Structured Extraction",
     model: GeminiModel = GeminiModel.GEMINI_2_5_FLASH
@@ -26,9 +27,10 @@ def extract(
         text: The text to extract data from
         schema: Pydantic model defining the structure to extract
         prompt: Instructions for extraction (prepended to text)
-        tracker: Optional TokenTracker for usage tracking
+        logger: Optional StepLogger for token tracking
         return_list: If True, expects list of schema objects
         step_name: Name for token tracking
+        model: Gemini model to use (defaults to GEMINI_2_5_FLASH)
 
     Returns:
         Parsed Pydantic model instance(s) validated against schema
@@ -40,20 +42,21 @@ def extract(
     Example:
         ```python
         from pydantic import BaseModel
-        from utils import extract_structured_data, TokenTracker
+        from utils import extract
+        from utils.step_logger import StepLogger
 
         class Person(BaseModel):
             name: str
             age: int
             occupation: str
 
-        tracker = TokenTracker()
+        logger = StepLogger("my_script")
         text = "John Smith is a 35-year-old software engineer..."
 
         person = extract(
             text=text,
             schema=Person,
-            tracker=tracker
+            logger=logger
         )
 
         print(person.name)  # "John Smith"
@@ -78,7 +81,7 @@ def extract(
     )
 
     # Call Gemini
-    response = call_gemini(request, tracker)
+    response = call_gemini(request, logger)
 
     # Parse JSON response
     try:
