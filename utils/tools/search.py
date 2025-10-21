@@ -21,6 +21,7 @@ def search_exa(
     query: str,
     num_results: int = 5,
     max_characters: int = 2000,
+    start_published_date: Optional[str] = None,
     api_key: Optional[str] = None
 ) -> List[SearchResult]:
     """
@@ -30,6 +31,7 @@ def search_exa(
         query: Search query string
         num_results: Number of results to return (default: 5)
         max_characters: Maximum characters for text content (default: 2000)
+        start_published_date: Optional start date for filtering results (ISO format: YYYY-MM-DD)
         api_key: Optional API key (defaults to EXA_API_KEY env var)
 
     Returns:
@@ -38,7 +40,7 @@ def search_exa(
     Example:
         from utils import search_exa
 
-        results = search_exa("machine learning trends", num_results=5)
+        results = search_exa("machine learning trends", num_results=5, start_published_date="2024-01-01")
         for result in results:
             print(f"{result.title}: {result.url}")
             print(f"Text: {result.text[:200]}...")
@@ -59,13 +61,20 @@ def search_exa(
     exa = Exa(api_key=api_key)
 
     try:
+        # Build search parameters
+        search_params = {
+            "query": query,
+            "num_results": num_results,
+            "text": {"max_characters": max_characters},
+            "highlights": True
+        }
+
+        # Add date filter if provided
+        if start_published_date:
+            search_params["start_published_date"] = start_published_date
+
         # Search with text content and highlights
-        response = exa.search_and_contents(
-            query,
-            num_results=num_results,
-            text={"max_characters": max_characters},
-            highlights=True
-        )
+        response = exa.search_and_contents(**search_params)
 
         # Convert to normalized SearchResult objects
         search_results = []

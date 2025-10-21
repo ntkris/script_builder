@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Set
@@ -14,6 +15,9 @@ from utils import (
     SearchResult,
     save_json,
     extract,
+    call_anthropic,
+    AIRequest,
+    AnthropicModel,
 )
 load_dotenv()
 
@@ -28,6 +32,17 @@ class QueryPlan(BaseModel):
     """Container model for a batch of search queries."""
 
     queries: List[SearchQuery]
+
+
+class PreFilterResult(BaseModel):
+    """Quick classification of whether a search result is likely a tender page."""
+
+    is_likely_tender: bool = Field(
+        description="True if the page appears to be an active tender opportunity"
+    )
+    reason: str = Field(
+        description="Brief explanation for the classification decision"
+    )
 
 
 class TenderExtraction(BaseModel):
@@ -76,47 +91,121 @@ def generate_search_queries(
     max_queries: int,
     logger: StepLogger,
 ) -> List[SearchQuery]:
-    """Use Gemini to craft targeted procurement search queries."""
+    """Use Claude Sonnet 4 to craft targeted procurement search queries."""
 
-    prompt = f"""You are an expert procurement researcher generating search queries to find active public tenders.
+    prompt = f"""You are an expert procurement researcher generating search queries for Exa's semantic search engine to find active public tenders.
 
 Company website: {company_url}
 Location focus: {location}
 Services and capabilities: {description}
 
-Goal: produce {max_queries} highly targeted search queries that can be sent to a search engine specialising in tenders. Mix national procurement portals, local government sites, framework notices, and relevant sector terms. Prioritise recent and open opportunities.
+Goal: Produce {max_queries} natural language search queries optimized for semantic search that will find ACTIVE, OPEN tender opportunities.
 
-Guidelines:
-- Embed the target location or nearby regions when helpful
-- Incorporate the company's service keywords and synonyms
-- Prefer queries likely to surface official procurement notices or RFP listings
-- Vary phrasing and site focus so the queries cover different lead sources
+IMPORTANT - Query Format for Exa Semantic Search:
+- Write natural language queries, NOT Google-style boolean operators
+- NO "site:", "OR", quotation marks, or minus signs
+- Focus on semantic meaning and intent
+- Use descriptive phrases that would appear on tender pages
+- Include recency signals like "new", "recent", "published this week/month"
 
-Return only structured JSON matching the specified schema."""
+Good Exa Query Examples:
+✓ "Fire alarm installation tender opportunities published recently UK government"
+✓ "New CCTV security system procurement contracts NHS education sector"
+✓ "Active fire safety tender Scotland Wales local authorities"
+✓ "Recent access control intruder alarm tender public sector buildings"
+✓ "Fire door compartmentation contract notice UK healthcare"
+
+Bad Query Examples (DO NOT USE):
+✗ "site:contractsfinder.gov.uk \"fire alarm\" OR \"fire safety\" -award"
+✗ "(tender OR procurement) AND (CCTV OR security) -awarded"
+✗ "\"contract notice\" \"fire alarm\" -framework"
+
+Target Sources to find (but reference naturally):
+- contractsfinder.service.gov.uk (UK central government)
+- find-tender.service.gov.uk (UK post-Brexit tenders)
+- publiccontractsscotland.gov.uk (Scottish public sector)
+- sell2wales.gov.wales (Welsh public sector)
+- NHS procurement, education procurement, local authority tenders
+
+What to Find:
+- Active tender opportunities, RFPs, contract notices
+- Recent procurement announcements
+- Open bidding opportunities
+
+What to Avoid (signal through natural language):
+- Contract awards or concluded tenders
+- Framework supplier lists
+- Old or expired opportunities
+- Preliminary market engagement only
+
+Query Strategy:
+- Cover different service areas (fire safety, security systems, access control, etc.)
+- Vary by sector (NHS, education, local authorities, public buildings)
+- Include geographic variants (UK-wide, Scotland, Wales, specific regions)
+- Mix broad and specific service terms
+- Emphasize recency and active status"""
+
+    request = AIRequest(
+        messages=[{"role": "user", "content": prompt}],
+        model=AnthropicModel.CLAUDE_SONNET_4,
+        max_tokens=2000,
+        step_name="Generate Tender Queries",
+        json_mode=True,
+        response_schema=QueryPlan,
+    )
+    response = call_anthropic(request, logger)
+
+    # Parse JSON response (already extracted by Anthropic provider)
+    data = json.loads(response.content)
+    plan = QueryPlan.model_validate(data)
+
+    print(f"✅ Generated {len(plan.queries)} queries with Claude Sonnet 4")
+    return plan.queries
+
+
+def quick_prefilter(result: SearchResult, logger: StepLogger) -> PreFilterResult:
+    """Fast Gemini Flash pre-filter to identify likely tender pages before full evaluation."""
+
+    prompt = f"""You are a procurement analyst doing a quick first-pass filter on search results.
+
+Classify whether this search result is likely an ACTIVE TENDER PAGE that should be evaluated in detail.
+
+ACCEPT (is_likely_tender = true) if the page appears to be:
+- An open tender, RFP, RFQ, or contract notice
+- A live procurement opportunity
+- An official procurement portal listing
+
+REJECT (is_likely_tender = false) if the page appears to be:
+- An award notice or contract already awarded
+- A framework supplier list (existing framework, not a new tender)
+- A tender aggregator or search portal (like bidstats.uk)
+- A marketing page from a service provider company
+- A preliminary market engagement notice (not the actual tender)
+- A news article about procurement
+- Expired or historical tender information
+
+Search Result:
+Title: {result.title}
+URL: {result.url}
+Snippet: {result.text[:500] if result.text else 'No text available'}
+
+Provide a brief reason (1 sentence) for your decision."""
 
     try:
-        plan = extract(
+        prefilter = extract(
             text="",
-            schema=QueryPlan,
+            schema=PreFilterResult,
             prompt=prompt,
             logger=logger,
-            step_name="Generate Tender Queries",
+            step_name="Quick Pre-Filter",
         )
-        print(f"✅ Generated {len(plan.queries)} queries")
-        return plan.queries
+        return prefilter
     except (ValidationError, ValueError) as err:
-        print(f"⚠️ Failed to generate queries: {err}")
-        print("Using fallback tender queries.")
-        fallback = [
-            SearchQuery(
-                query=f"{location} public tender {description}",
-                reasoning="General tender search",
-            ),
-            SearchQuery(
-                query=f"{location} procurement opportunity site:gov", reasoning="Government portals"
-            ),
-        ]
-        return fallback[:max_queries]
+        print(f"⚠️ Pre-filter failed for {result.url}: {err}")
+        # Default to accepting on error (permissive)
+        return PreFilterResult(
+            is_likely_tender=True, reason="Pre-filter failed, passing through to full evaluation"
+        )
 
 
 def evaluate_search_result(
@@ -208,14 +297,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-queries",
         type=int,
-        default=6,
-        help="Maximum number of search queries to generate",
+        default=8,
+        help="Maximum number of search queries to generate (default: 8)",
     )
     parser.add_argument(
         "--results-per-query",
         type=int,
-        default=6,
-        help="Number of Exa results to fetch per query",
+        default=10,
+        help="Number of Exa results to fetch per query (default: 10)",
     )
     return parser
 
@@ -262,9 +351,17 @@ def main() -> None:
     all_evaluations = []  # Track decisions with reasons
     all_results = []
 
+    # Date filter: only search results from last 30 days
+    cutoff_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
     for idx, query in enumerate(queries, start=1):
         print(f"\n🔎 Running query {idx}/{len(queries)}: {query.query}")
-        results = search_exa(query.query, num_results=args.results_per_query, max_characters=4000)
+        results = search_exa(
+            query.query,
+            num_results=args.results_per_query,
+            max_characters=4000,
+            start_published_date=cutoff_date,
+        )
 
         # Track all search results for cache (full results)
         for result in results:
@@ -278,6 +375,24 @@ def main() -> None:
                 continue
             seen_urls.add(result.url)
 
+            # Stage 1: Quick pre-filter with Gemini Flash
+            print(f"   🔍 Pre-filtering: {result.url}")
+            prefilter = quick_prefilter(result, logger)
+
+            if not prefilter.is_likely_tender:
+                print(f"   ⏭️ Pre-filter rejected: {prefilter.reason}")
+                all_evaluations.append({
+                    "url": result.url,
+                    "query": query.query,
+                    "decision": "prefilter_rejected",
+                    "reason": prefilter.reason,
+                    "extraction": None,
+                })
+                continue
+
+            print(f"   ✓ Pre-filter passed: {prefilter.reason}")
+
+            # Stage 2: Detailed evaluation with Gemini Flash
             extraction = evaluate_search_result(
                 result=result,
                 company_url=args.url,
@@ -289,9 +404,10 @@ def main() -> None:
             if extraction is None:
                 all_evaluations.append({
                     "url": result.url,
+                    "query": query.query,
                     "decision": "failed_extraction",
                     "reason": "Failed to parse extraction from LLM response",
-                    "extraction": None
+                    "extraction": None,
                 })
                 continue
 
@@ -367,6 +483,8 @@ def main() -> None:
         "summary": {
             "total_results_fetched": len(all_results),
             "unique_urls_evaluated": len(all_evaluations),
+            "prefilter_rejected": sum(1 for e in all_evaluations if e["decision"] == "prefilter_rejected"),
+            "prefilter_passed": sum(1 for e in all_evaluations if e["decision"] != "prefilter_rejected"),
             "accepted": len(qualifying_rows),
             "rejected_not_tender": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_tender"),
             "rejected_not_recent": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_recent"),
