@@ -4,6 +4,8 @@
 import argparse
 import csv
 import json
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Set
@@ -84,6 +86,34 @@ class TenderExtraction(BaseModel):
     )
 
 
+def fetch_url_content(url: str, timeout: int = 10) -> Optional[str]:
+    """Fetch and extract clean text from a URL using BeautifulSoup."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.decompose()
+
+        # Get text
+        text = soup.get_text(separator='\n', strip=True)
+
+        # Clean up whitespace
+        lines = (line.strip() for line in text.splitlines())
+        text = '\n'.join(line for line in lines if line)
+
+        return text
+    except Exception as e:
+        print(f"⚠️ Failed to fetch {url}: {e}")
+        return None
+
+
 def generate_search_queries(
     company_url: str,
     location: str,
@@ -102,48 +132,42 @@ Services and capabilities: {description}
 Goal: Produce {max_queries} natural language search queries optimized for semantic search that will find ACTIVE, OPEN tender opportunities.
 
 IMPORTANT - Query Format for Exa Semantic Search:
-- Write natural language queries, NOT Google-style boolean operators
+- Write natural language queries combining SERVICE + PROCUREMENT SIGNAL + CONTEXT
 - NO "site:", "OR", quotation marks, or minus signs
-- Focus on semantic meaning and intent
-- Use descriptive phrases that would appear on tender pages
-- Include recency signals like "new", "recent", "published this week/month"
+- Include ONE procurement word per query: "contract", "tender", "opportunity", "notice"
+- Avoid generic phrases like "tender opportunities" or "procurement contracts" alone
+- Focus on specific services with building/sector context
 
 Good Exa Query Examples:
-✓ "Fire alarm installation tender opportunities published recently UK government"
-✓ "New CCTV security system procurement contracts NHS education sector"
-✓ "Active fire safety tender Scotland Wales local authorities"
-✓ "Recent access control intruder alarm tender public sector buildings"
-✓ "Fire door compartmentation contract notice UK healthcare"
+✓ "fire alarm installation contract NHS hospital Scotland"
+✓ "CCTV security system tender education buildings UK"
+✓ "access control upgrade contract opportunity council offices"
+✓ "fire door installation tender notice hospital Wales"
+✓ "security fencing installation contract NHS campus UK"
+✓ "intruder alarm maintenance tender government buildings Scotland"
+✓ "gate automation contract opportunity healthcare facilities"
 
 Bad Query Examples (DO NOT USE):
-✗ "site:contractsfinder.gov.uk \"fire alarm\" OR \"fire safety\" -award"
-✗ "(tender OR procurement) AND (CCTV OR security) -awarded"
-✗ "\"contract notice\" \"fire alarm\" -framework"
+✗ "fire alarm system upgrade replacement hospital building UK" (no procurement signal)
+✗ "Fire alarm installation tender opportunities published recently" (too generic)
+✗ "Active fire safety tender Scotland Wales local authorities" (too generic)
+✗ "site:contractsfinder.gov.uk \"fire alarm\" OR \"fire safety\" -award" (boolean operators)
 
-Target Sources to find (but reference naturally):
-- contractsfinder.service.gov.uk (UK central government)
-- find-tender.service.gov.uk (UK post-Brexit tenders)
-- publiccontractsscotland.gov.uk (Scottish public sector)
-- sell2wales.gov.wales (Welsh public sector)
-- NHS procurement, education procurement, local authority tenders
-
-What to Find:
-- Active tender opportunities, RFPs, contract notices
-- Recent procurement announcements
-- Open bidding opportunities
-
-What to Avoid (signal through natural language):
-- Contract awards or concluded tenders
-- Framework supplier lists
-- Old or expired opportunities
-- Preliminary market engagement only
+Target Sources to find:
+- Official government tender portals (find-tender, contractsfinder, publiccontractsscotland, sell2wales)
+- Private sector and council procurement pages
+- NHS procurement, education procurement, housing associations
+- University and local authority tender pages
 
 Query Strategy:
-- Cover different service areas (fire safety, security systems, access control, etc.)
-- Vary by sector (NHS, education, local authorities, public buildings)
-- Include geographic variants (UK-wide, Scotland, Wales, specific regions)
-- Mix broad and specific service terms
-- Emphasize recency and active status"""
+- Combine: [specific service] + [procurement word] + [building/sector] + [location]
+- Procurement words: "contract", "tender", "opportunity", "notice", "RFP", "quotation"
+- Service areas: fire alarms, CCTV, access control, fire doors, security fencing, gates, compartmentation
+- Sectors: NHS/healthcare, education, local councils, government buildings, housing
+- Locations: UK-wide, Scotland, Wales, England, specific cities/regions
+- Vary the procurement word across queries (don't repeat "tender" 8 times)
+
+Remember: We want individual tender/contract pages for specific projects, NOT news articles, case studies, or aggregator listings."""
 
     request = AIRequest(
         messages=[{"role": "user", "content": prompt}],
@@ -170,19 +194,34 @@ def quick_prefilter(result: SearchResult, logger: StepLogger) -> PreFilterResult
 
 Classify whether this search result is likely an ACTIVE TENDER PAGE that should be evaluated in detail.
 
-ACCEPT (is_likely_tender = true) if the page appears to be:
-- An open tender, RFP, RFQ, or contract notice
-- A live procurement opportunity
-- An official procurement portal listing
+ACCEPT (is_likely_tender = true) ONLY if the page appears to be:
+- A specific, individual tender or contract notice with a unique project
+- An official procurement portal page for ONE specific opportunity
+- URLs from: find-tender.service.gov.uk, contractsfinder.service.gov.uk, publiccontractsscotland.gov.uk, sell2wales.gov.wales
 
-REJECT (is_likely_tender = false) if the page appears to be:
-- An award notice or contract already awarded
-- A framework supplier list (existing framework, not a new tender)
-- A tender aggregator or search portal (like bidstats.uk)
-- A marketing page from a service provider company
-- A preliminary market engagement notice (not the actual tender)
-- A news article about procurement
-- Expired or historical tender information
+REJECT (is_likely_tender = false) if ANY of these apply:
+
+Aggregators & Search Portals (ALWAYS REJECT):
+- URLs containing: bidstats, stotles, tenderlink, contractfinderpro, b2bquote, globaltenders, tendersinfo, hydebids, facilitatemagazine
+- Pages showing "Search results for...", "Browse tenders", "Tender opportunities in [category]"
+- Listing multiple tenders with filters/categories
+
+Social Media & News (ALWAYS REJECT):
+- Facebook, Twitter, LinkedIn, Instagram
+- News articles, journals, magazines, blogs
+- URLs containing: /news/, /article/, /blog/, journal.com, magazine.com
+
+Non-Tender Official Pages (REJECT):
+- Award notices (contract already awarded)
+- Framework supplier lists
+- Preliminary market engagement or Request for Information (RFI)
+- Pipeline notices (future procurement only)
+- Policy documents, consultations, general information pages
+
+Key Patterns:
+- REJECT if URL has search parameters like "?q=", "?category=", "/search/"
+- REJECT if title contains "Latest tenders", "Find tenders", "Search results"
+- REJECT if multiple organization names or projects mentioned
 
 Search Result:
 Title: {result.title}
@@ -214,6 +253,7 @@ def evaluate_search_result(
     location: str,
     description: str,
     logger: StepLogger,
+    full_page_text: Optional[str] = None,
 ) -> Optional[TenderExtraction]:
     """Determine whether a search result is a viable tender and extract key facts."""
 
@@ -223,19 +263,24 @@ def evaluate_search_result(
     prompt = f"""You are a procurement analyst vetting tenders for a business development team.
 
 Company website: {company_url}
-Company capabilities: {description}
+Company capabilities and services: {description}
 Target geography: {location}
 Current date: {today}
 
-Evaluate the search result below. Decide if it represents an active tender, RFP, RFQ, contract notice, or framework opportunity that matches the company's services and location focus. Reject news articles, award notices, expired tenders, or unrelated opportunities.
+Your task: Evaluate whether this tender matches the company's specific capabilities.
 
-Requirements:
-- Only set is_tender to true for genuine, open procurement opportunities.
-- Confirm the notice was published within the last 30 days relative to the current date.
-- Confirm the tender applies to the target geography or explicitly mentions a relevant location.
-- When values are expressed in other currencies, convert the best estimate to GBP (numeric) using reasonable contemporary rates.
-- Use ISO 8601 format (YYYY-MM-DD) for dates when possible.
-- Provide concise but information-rich descriptions suitable for a CRM entry.
+IMPORTANT - Be very specific about service matching:
+- Only accept tenders that match the company's EXACT services and capabilities
+- Pay attention to the details: if company does "physical security systems", reject "cyber security"
+- If company does "fire safety", reject "heating and ventilation" (unless fire-related)
+- Distinguish between similar-sounding but different services (e.g., physical security audits vs IT security audits)
+
+Evaluation Criteria:
+1. Service Match: Tender services must closely match company's stated capabilities
+2. Tender Status: Must be an active, open opportunity (NOT awarded, NOT just preliminary engagement, NOT pipeline notice)
+3. Recency: Published within last 30 days from current date
+4. Location: Within target geography
+5. Extract ALL available metadata: deadlines, values, locations, contact details
 
 Search result metadata:
 Query: {result.query}
@@ -244,7 +289,8 @@ URL: {result.url}
 Published date (from search): {result.published_date or 'Unknown'}
 Highlights: {highlights}"""
 
-    text = f"Extracted page text:\n{result.text}"
+    # Use full page text if available, otherwise fall back to Exa's text
+    text = f"Extracted page text:\n{full_page_text if full_page_text else result.text}"
 
     try:
         extraction = extract(
@@ -392,13 +438,21 @@ def main() -> None:
 
             print(f"   ✓ Pre-filter passed: {prefilter.reason}")
 
-            # Stage 2: Detailed evaluation with Gemini Flash
+            # Stage 2: Fetch full page content
+            print(f"   📥 Fetching full page content...")
+            full_page_text = fetch_url_content(result.url)
+
+            if full_page_text is None:
+                print(f"   ⚠️ Failed to fetch page, using Exa summary")
+
+            # Stage 3: Detailed evaluation with Gemini Flash using full content
             extraction = evaluate_search_result(
                 result=result,
                 company_url=args.url,
                 location=args.location,
                 description=args.text,
                 logger=logger,
+                full_page_text=full_page_text,
             )
 
             if extraction is None:
