@@ -486,21 +486,29 @@ def main() -> None:
             else:
                 decision = "accepted"
                 decision_reason = f"Tender matches criteria: {extraction.reason}"
-                qualifying_rows.append(
-                    {
-                        "url": result.url,
-                        "title": extraction.title,
-                        "description": extraction.description,
-                        "published_date": extraction.published_date or "",
-                        "deadline": extraction.deadline or "",
-                        "value_in_gbp": f"{extraction.value_gbp:.2f}" if extraction.value_gbp is not None else "",
-                        "currency": extraction.original_currency
-                        or extraction.currency
-                        or ("GBP" if extraction.value_gbp else ""),
-                        "location": "; ".join(extraction.location),
-                    }
-                )
                 print(f"   ✅ Added tender: {extraction.title}")
+
+            # Add ALL evaluated tenders to CSV (not just accepted)
+            qualifying_rows.append(
+                {
+                    "decision": decision,
+                    "is_tender": extraction.is_tender,
+                    "is_recent": extraction.is_recent,
+                    "is_location_match": extraction.is_location_match,
+                    "query": query.query,
+                    "url": result.url,
+                    "title": extraction.title,
+                    "description": extraction.description,
+                    "published_date": extraction.published_date or "",
+                    "deadline": extraction.deadline or "",
+                    "value_in_gbp": f"{extraction.value_gbp:.2f}" if extraction.value_gbp is not None else "",
+                    "currency": extraction.original_currency
+                    or extraction.currency
+                    or ("GBP" if extraction.value_gbp else ""),
+                    "location": "; ".join(extraction.location),
+                    "reason": decision_reason,
+                }
+            )
 
             # Log all evaluations with decisions and full extraction data
             all_evaluations.append({
@@ -532,6 +540,7 @@ def main() -> None:
     )
 
     # Log all evaluations with decisions and reasons for debugging
+    accepted_count = sum(1 for e in all_evaluations if e["decision"] == "accepted")
     logger.output({
         "evaluations": all_evaluations,  # Full extraction data with decisions
         "summary": {
@@ -539,7 +548,7 @@ def main() -> None:
             "unique_urls_evaluated": len(all_evaluations),
             "prefilter_rejected": sum(1 for e in all_evaluations if e["decision"] == "prefilter_rejected"),
             "prefilter_passed": sum(1 for e in all_evaluations if e["decision"] != "prefilter_rejected"),
-            "accepted": len(qualifying_rows),
+            "accepted": accepted_count,
             "rejected_not_tender": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_tender"),
             "rejected_not_recent": sum(1 for e in all_evaluations if e["decision"] == "rejected_not_recent"),
             "rejected_wrong_location": sum(1 for e in all_evaluations if e["decision"] == "rejected_wrong_location"),
@@ -548,13 +557,14 @@ def main() -> None:
     })
 
     if not qualifying_rows:
-        print("\nNo qualifying tenders were found.")
+        print("\nNo evaluated tenders were found.")
         logger.finalize()
         return
 
-    # Step 3: Save final CSV
+    # Step 3: Save final CSV (ALL evaluated tenders, not just accepted)
     logger.step("Save Results", inputs={
-        "qualifying_tenders": qualifying_rows  # Log actual tender data
+        "total_evaluated_tenders": len(qualifying_rows),
+        "accepted_tenders": accepted_count
     })
 
     # Always save final CSV to outputs directory
@@ -563,6 +573,11 @@ def main() -> None:
     output_path = output_dir / f"tenders_{timestamp}.csv"
 
     fieldnames = [
+        "decision",
+        "is_tender",
+        "is_recent",
+        "is_location_match",
+        "query",
         "url",
         "title",
         "description",
@@ -571,6 +586,7 @@ def main() -> None:
         "value_in_gbp",
         "currency",
         "location",
+        "reason",
     ]
 
     with output_path.open("w", newline="", encoding="utf-8") as csvfile:
@@ -578,7 +594,10 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(qualifying_rows)
 
-    print(f"\n📄 Saved {len(qualifying_rows)} tenders to {output_path}")
+    accepted_tenders = [row for row in qualifying_rows if row["decision"] == "accepted"]
+    print(f"\n📄 Saved {len(qualifying_rows)} evaluated tenders to {output_path}")
+    print(f"   ✅ {len(accepted_tenders)} accepted")
+    print(f"   ⏭️ {len(qualifying_rows) - len(accepted_tenders)} rejected (but included for review)")
 
     logger.output({
         "csv_path": str(output_path),
