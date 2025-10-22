@@ -69,15 +69,35 @@ class StepLogger:
             result = search(query)
             logger.update({"completed": i + 1})
         logger.output({"total": len(results)})
+
+    Resumable Example:
+        logger = StepLogger("tender_finder", resumable=True)
+
+        logger.step("Load tenders")
+        if logger.should_run_step():
+            tenders = load_tenders()
+            logger.output({"tenders": tenders})
+        else:
+            tenders = logger.get_cached_output("tenders")
+
+        logger.step("Process tenders")
+        if logger.should_run_step():
+            for tender in tenders:
+                if logger.is_item_completed(tender.url):
+                    print(f"⏭️  Skipping {tender.url}")
+                    continue
+                result = process_tender(tender)
+                logger.mark_item_complete(tender.url, result)
     """
 
-    def __init__(self, script_name: str, output_dir: str = "cache"):
+    def __init__(self, script_name: str, output_dir: str = "cache", resumable: bool = False):
         self.script_name = script_name
         self.output_dir = output_dir
         self.session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.steps: List[StepRecord] = []
         self.current_step: Optional[StepRecord] = None
         self.step_counter = 0
+        self.resumable = resumable
 
         # Token tracking for current step
         self._current_step_start_tokens = TokenUsage()
@@ -87,6 +107,18 @@ class StepLogger:
 
         # File path for incremental saves
         self.log_file = Path(output_dir) / f"step_log_{script_name}_{self.session_timestamp}.json"
+
+        # Resume state tracking
+        self.resume_state_file = Path(output_dir) / f"resume_state_{script_name}.json"
+        self.completed_steps: List[str] = []
+        self.step_outputs: Dict[str, Any] = {}
+        self.completed_items: Dict[str, List[str]] = {}
+        self.is_resuming = False
+
+        # Load resume state if it exists
+        if self.resumable and self.resume_state_file.exists():
+            self._load_resume_state()
+            print(f"🔄 Resuming from previous run: {len(self.completed_steps)} steps completed")
 
     def step(self, name: str, inputs: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -113,7 +145,11 @@ class StepLogger:
         # Reset token tracking for this step
         self._current_step_start_tokens = TokenUsage()
 
-        print(f"\n🔹 Step {self.step_counter}: {name}")
+        # Check if step was already completed (for resumable)
+        if self.resumable and name in self.completed_steps:
+            print(f"\n⏭️  Step {self.step_counter}: {name} (skipped - already completed)")
+        else:
+            print(f"\n🔹 Step {self.step_counter}: {name}")
 
         # Save immediately
         self._save()
@@ -152,6 +188,14 @@ class StepLogger:
             return
 
         self.current_step.outputs = data
+
+        # Save to resume state if resumable
+        if self.resumable:
+            step_name = self.current_step.name
+            self.step_outputs[step_name] = data
+            self.completed_steps.append(step_name)
+            self._save_resume_state()
+
         self._complete_current_step(status="success")
 
     def fail(self, error: Exception) -> None:
@@ -310,4 +354,136 @@ class StepLogger:
 
         print(f"\n💾 Step log saved: {self.log_file}")
 
+        # Clear resume state on successful completion
+        if self.resumable and self.resume_state_file.exists():
+            self.resume_state_file.unlink()
+            print(f"🗑️  Resume state cleared")
+
         return str(self.log_file)
+
+    # Resumable functionality
+
+    def should_run_step(self) -> bool:
+        """
+        Check if the current step should be executed.
+        Returns False if the step was already completed in a previous run.
+
+        Returns:
+            True if step should run, False if already completed
+        """
+        if not self.resumable or not self.current_step:
+            return True
+
+        return self.current_step.name not in self.completed_steps
+
+    def get_cached_output(self, key: str) -> Any:
+        """
+        Get cached output from a previously completed step.
+
+        Args:
+            key: Key to retrieve from step outputs
+
+        Returns:
+            The cached value, or None if not found
+        """
+        if not self.resumable:
+            print("⚠️ get_cached_output() only works with resumable=True")
+            return None
+
+        if not self.current_step:
+            print("⚠️ No active step")
+            return None
+
+        step_name = self.current_step.name
+        if step_name not in self.step_outputs:
+            print(f"⚠️ No cached output for step: {step_name}")
+            return None
+
+        step_output = self.step_outputs[step_name]
+        if key not in step_output:
+            print(f"⚠️ Key '{key}' not found in cached output for step: {step_name}")
+            return None
+
+        return step_output[key]
+
+    def is_item_completed(self, item_id: str) -> bool:
+        """
+        Check if an item has been completed in the current step.
+
+        Args:
+            item_id: Unique identifier for the item
+
+        Returns:
+            True if item was already completed
+        """
+        if not self.resumable or not self.current_step:
+            return False
+
+        step_name = self.current_step.name
+        if step_name not in self.completed_items:
+            return False
+
+        return item_id in self.completed_items[step_name]
+
+    def mark_item_complete(self, item_id: str, result: Optional[Any] = None) -> None:
+        """
+        Mark an item as completed in the current step and save resume state.
+
+        Args:
+            item_id: Unique identifier for the item
+            result: Optional result data to store
+        """
+        if not self.resumable:
+            print("⚠️ mark_item_complete() only works with resumable=True")
+            return
+
+        if not self.current_step:
+            print("⚠️ No active step - call step() first")
+            return
+
+        step_name = self.current_step.name
+
+        # Initialize list if needed
+        if step_name not in self.completed_items:
+            self.completed_items[step_name] = []
+
+        # Add item if not already there
+        if item_id not in self.completed_items[step_name]:
+            self.completed_items[step_name].append(item_id)
+
+        # Save resume state immediately
+        self._save_resume_state()
+
+    def _load_resume_state(self) -> None:
+        """Load resume state from file"""
+        try:
+            with open(self.resume_state_file, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+
+            self.completed_steps = state.get("completed_steps", [])
+            self.step_outputs = state.get("step_outputs", {})
+            self.completed_items = state.get("completed_items", {})
+            self.is_resuming = True
+
+        except Exception as e:
+            print(f"⚠️ Failed to load resume state: {e}")
+            # Reset to clean state
+            self.completed_steps = []
+            self.step_outputs = {}
+            self.completed_items = {}
+
+    def _save_resume_state(self) -> None:
+        """Save resume state to file"""
+        state = {
+            "script_name": self.script_name,
+            "timestamp": datetime.now().isoformat(),
+            "completed_steps": self.completed_steps,
+            "step_outputs": self.step_outputs,
+            "completed_items": self.completed_items
+        }
+
+        try:
+            with open(self.resume_state_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠️ Failed to save resume state: {e}")

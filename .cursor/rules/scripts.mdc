@@ -23,6 +23,7 @@ alwaysApply: false
 - **Run scripts**: `uv run scripts/script_name.py`
 - **Add packages**: `uv add package_name`
 - **Never use pip**: Always use `uv` for dependency management
+- **Clear cache**: `uv run scripts/clear_cache.py` (clears all cache files including resume state)
 
 ## Imports Pattern (CRITICAL)
 **ALWAYS put ALL imports at the top of the file. NEVER use inline imports.**
@@ -90,6 +91,100 @@ logger.output({
 # At script end
 logger.finalize()  # Prints summary, saves step log to cache/
 ```
+
+## Resumable Scripts (for long-running operations)
+
+**When to use resumable mode:**
+- Processing 50+ items that take time (API calls, web scraping)
+- Operations that might timeout or crash
+- Expensive operations you don't want to repeat
+
+**When NOT to use:**
+- Simple scripts with < 10 items
+- Fast operations (< 1 minute total)
+- Scripts that need fresh data every run
+
+### Pattern for resumable scripts:
+
+```python
+import argparse
+from utils.step_logger import StepLogger
+
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description="...")
+    # ... other args ...
+    parser.add_argument("--fresh", action="store_true",
+                       help="Start fresh, ignore resume state")
+    return parser
+
+def main():
+    args = parser.parse_args()
+
+    # Enable resumable mode
+    logger = StepLogger("script_name", resumable=True)
+
+    # Handle --fresh flag
+    if args.fresh and logger.resume_state_file.exists():
+        logger.resume_state_file.unlink()
+        print("🗑️  Cleared resume state, starting fresh")
+
+    # Step 1: Generate or load data
+    logger.step("Load Data")
+    if logger.should_run_step():
+        data = expensive_operation()
+        logger.output({"data": data})
+    else:
+        data = logger.get_cached_output("data")
+        print("✅ Loaded from cache")
+
+    # Step 2: Process items with resume support
+    logger.step("Process Items")
+
+    # Load intermediate state if resuming
+    if logger.should_run_step():
+        results = []
+    else:
+        results = logger.get_cached_output("results") or []
+
+    for item in items:
+        # Skip already processed items
+        if logger.is_item_completed(item.id):
+            print(f"⏭️  Skipping {item.id}")
+            continue
+
+        result = process_item(item)
+        results.append(result)
+
+        # Mark complete and save immediately (crash-safe)
+        logger.mark_item_complete(item.id)
+
+    # Save intermediate state in output for resumability
+    logger.output({
+        "results": results,
+        "intermediate_data": other_data  # Include what's needed to resume
+    })
+
+    # Step 3: Save final output
+    logger.step("Save Results")
+    if logger.should_run_step():
+        save_results(results)
+        logger.output({"saved": True})
+
+    logger.finalize()  # Clears resume state on success
+```
+
+**Key methods:**
+- `should_run_step()` - Returns False if step already completed
+- `get_cached_output(key)` - Loads data from previous run
+- `is_item_completed(item_id)` - Checks if item was processed
+- `mark_item_complete(item_id)` - Saves state immediately (crash-safe)
+
+**How it works:**
+- Creates `cache/resume_state_{script_name}.json` with completed steps and items
+- Each `mark_item_complete()` saves immediately (survives crashes)
+- Resume state auto-deleted on successful `finalize()`
+- Use `--fresh` flag to force clean run
+- Use `uv run scripts/clear_cache.py` to manually clear all cache including resume state
 
 ## LLM Calls (REQUIRED PATTERN)
 - **Never initialize clients directly**: No `anthropic.Anthropic()` or `genai.Client()`
@@ -297,3 +392,6 @@ except Exception as e:
 - ❌ Don't put task-specific code in utils prematurely
 - ❌ Don't forget to call `load_dotenv()` before importing utils
 - ❌ Don't use TypedDict, dataclasses, or plain dicts - ALWAYS use Pydantic BaseModel
+- ❌ Don't forget `--fresh` flag when using resumable mode
+- ❌ Don't forget to call `mark_item_complete()` after processing each item in resumable scripts
+- ❌ Don't forget to save intermediate state in `logger.output()` for resumability

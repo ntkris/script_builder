@@ -49,7 +49,16 @@ script_builder/
 - ❌ Don't create separate cache files unless data is too large for StepLogger or needs reuse
 - ❌ Never save step logs to `outputs/` (StepLogger auto-saves to `cache/`)
 
-### 2. Utils Available
+### 2. Utility Scripts
+
+**Clear cache:**
+```bash
+uv run scripts/clear_cache.py
+```
+
+This clears all files from the `cache/` directory including step logs and resume state. Use this when you want to start completely fresh or clear old resume state files.
+
+### 3. Utils Available
 
 #### Step Logging with Token Tracking
 ```python
@@ -108,6 +117,89 @@ logger.finalize()  # Prints summary and saves to cache/
 - Use descriptive `step_name` for logging clarity
 - **Use Pydantic models** for all structured data (not TypedDict or dataclasses)
 - All step logs save to `cache/` directory automatically with timestamps
+
+#### Resumable Scripts (for long-running operations)
+
+For scripts that process many items (e.g., web scraping, batch processing), use resumable mode to recover from crashes:
+
+```python
+from utils.step_logger import StepLogger
+
+# Enable resumable mode
+logger = StepLogger("script_name", resumable=True)
+
+# Step 1: Generate or load data
+logger.step("Load Data")
+if logger.should_run_step():
+    data = expensive_operation()
+    logger.output({"data": data})
+else:
+    data = logger.get_cached_output("data")
+    print("✅ Loaded from cache")
+
+# Step 2: Process items with resume support
+logger.step("Process Items")
+if logger.should_run_step():
+    results = []
+else:
+    # Resume from previous run
+    results = logger.get_cached_output("results") or []
+
+for item in items:
+    # Skip already processed items
+    if logger.is_item_completed(item.id):
+        print(f"⏭️  Skipping {item.id}")
+        continue
+
+    result = process_item(item)
+    results.append(result)
+
+    # Mark complete and save immediately
+    logger.mark_item_complete(item.id)
+
+logger.output({"results": results})
+
+# Step 3: Save final output
+logger.step("Save Results")
+if logger.should_run_step():
+    save_results(results)
+    logger.output({"saved": True})
+
+logger.finalize()  # Clears resume state on success
+```
+
+**Resumable CLI patterns:**
+```python
+parser.add_argument("--fresh", action="store_true",
+                   help="Start fresh, ignore resume state")
+
+# In main():
+logger = StepLogger("script_name", resumable=True)
+
+if args.fresh and logger.resume_state_file.exists():
+    logger.resume_state_file.unlink()
+    print("🗑️  Cleared resume state, starting fresh")
+```
+
+**How it works:**
+- Creates `cache/resume_state_{script_name}.json` tracking completed steps and items
+- `should_run_step()` returns False if step already completed
+- `get_cached_output(key)` loads data from previous run
+- `is_item_completed(item_id)` checks if item was processed
+- `mark_item_complete(item_id)` saves state immediately (crash-safe)
+- Resume state auto-deleted on successful `finalize()`
+- Use `--fresh` flag to force clean run
+- Use `uv run scripts/clear_cache.py` to manually clear all cache including resume state
+
+**When to use resumable mode:**
+- Processing 50+ items that take time (API calls, web scraping)
+- Operations that might timeout or crash
+- Expensive operations you don't want to repeat
+
+**When NOT to use resumable mode:**
+- Simple scripts with < 10 items
+- Fast operations (< 1 minute total)
+- Scripts that need fresh data every run
 
 #### JSON I/O (Optional)
 ```python
@@ -434,18 +526,21 @@ if not path.exists():
 
 1. **Understand the task** - What inputs, what outputs, what processing?
 2. **Design the flow** - Break into steps, identify LLM calls needed
-3. **Use existing utils** - Don't reinvent, use call_anthropic, extract, save_json, etc.
-4. **Structure properly**:
+3. **Assess if resumable needed** - Many items (50+)? Long-running? Might crash?
+4. **Use existing utils** - Don't reinvent, use call_anthropic, extract, save_json, etc.
+5. **Structure properly**:
    - Script in `scripts/` directory
    - **All imports at the top** (never inline)
    - Load dotenv before importing utils
-   - Initialize `StepLogger("script_name")`
+   - Initialize `StepLogger("script_name", resumable=True)` if needed
+   - Add `--fresh` flag if using resumable mode
    - Use `logger.step()`, `logger.output()`, `logger.update()`
+   - Use `logger.mark_item_complete()` for each processed item in resumable scripts
    - Call `logger.finalize()` at end
    - Save interim data to cache, final results to outputs
-5. **Use Pydantic models** for all structured data
-6. **Add user-facing print statements** for visibility
-7. **Handle errors** with `logger.fail(exception)`
+6. **Use Pydantic models** for all structured data
+7. **Add user-facing print statements** for visibility
+8. **Handle errors** with `logger.fail(exception)`
 
 ## Example: If User Says "Write a script that analyzes text files"
 
@@ -556,6 +651,8 @@ if __name__ == "__main__":
 ❌ Don't create utils prematurely - keep in script until needed by multiple scripts
 ❌ Don't forget to call `load_dotenv()` before importing utils
 ❌ Don't use TypedDict, dataclasses, or plain dicts - always use Pydantic BaseModel
+❌ Don't forget `--fresh` flag when using resumable mode
+❌ Don't forget to call `mark_item_complete()` after processing each item in resumable scripts
 
 ## Key Takeaway
 
@@ -565,11 +662,16 @@ When the user asks for a script, write clean, well-structured code that:
 3. Logs **actual decisions and data** in inputs/outputs for debugging
 4. Uses the utils properly (call_anthropic, call_gemini, extract)
 5. Uses descriptive step names and passes logger to all LLM calls
-6. Saves final deliverables to outputs (not interim data)
-7. Uses Pydantic models for all structured data
-8. Has good visibility (print statements with emojis)
-9. Calls `logger.finalize()` at the end
+6. **Uses resumable mode** for scripts processing 50+ items or long-running operations
+7. Includes `--fresh` flag and proper `should_run_step()` / `mark_item_complete()` patterns for resumable scripts
+8. Saves final deliverables to outputs (not interim data)
+9. Uses Pydantic models for all structured data
+10. Has good visibility (print statements with emojis)
+11. Calls `logger.finalize()` at the end
 
-**Remember**: StepLogger should contain everything you need to understand what happened and why.
+**Remember**:
+- StepLogger should contain everything you need to understand what happened and why
+- For long-running scripts, resumable mode prevents re-work after crashes
+- Use `uv run scripts/clear_cache.py` to clear all cached data including resume state
 
 Keep it simple, keep it clean, keep it reusable.

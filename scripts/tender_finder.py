@@ -352,6 +352,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=10,
         help="Number of Exa results to fetch per query (default: 10)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Start fresh, ignore any existing resume state",
+    )
     return parser
 
 
@@ -361,8 +366,13 @@ def main() -> None:
 
     load_dotenv()
 
-    logger = StepLogger("tender_finder")
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    logger = StepLogger("tender_finder", resumable=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Handle --fresh flag: delete resume state if it exists
+    if args.fresh and logger.resume_state_file.exists():
+        logger.resume_state_file.unlink()
+        print("🗑️  Cleared resume state, starting fresh")
 
     # Step 1: Generate search queries
     logger.step("Generate Search Queries", inputs={
@@ -371,18 +381,24 @@ def main() -> None:
         "max_queries": args.max_queries
     })
 
-    queries = generate_search_queries(
-        company_url=args.url,
-        location=args.location,
-        description=args.text,
-        max_queries=args.max_queries,
-        logger=logger,
-    )
+    if logger.should_run_step():
+        queries = generate_search_queries(
+            company_url=args.url,
+            location=args.location,
+            description=args.text,
+            max_queries=args.max_queries,
+            logger=logger,
+        )
 
-    # Log actual queries with reasoning for debugging
-    logger.output({
-        "queries": [q.model_dump() for q in queries]
-    })
+        # Log actual queries with reasoning for debugging
+        logger.output({
+            "queries": [q.model_dump() for q in queries]
+        })
+    else:
+        # Load cached queries from previous run
+        queries_data = logger.get_cached_output("queries")
+        queries = [SearchQuery.model_validate(q) for q in queries_data]
+        print(f"✅ Loaded {len(queries)} queries from cache")
 
     # Step 2: Search and evaluate tenders
     logger.step("Search and Evaluate Tenders", inputs={
@@ -392,10 +408,17 @@ def main() -> None:
         "company_url": args.url
     })
 
-    seen_urls: Set[str] = set()
-    qualifying_rows = []
-    all_evaluations = []  # Track decisions with reasons
+    # Initialize or load state (try to resume even if step not fully completed)
+    # Don't load all_results - it will be rebuilt from new searches
     all_results = []
+    all_evaluations = logger.get_cached_output("all_evaluations") or []
+    qualifying_rows = logger.get_cached_output("qualifying_rows") or []
+    seen_urls = set(logger.get_cached_output("seen_urls") or [])
+
+    if all_evaluations:
+        print(f"🔄 Resuming: {len(all_evaluations)} URLs already evaluated")
+    else:
+        print("🆕 Starting fresh evaluation")
 
     # Date filter: only search results from last 30 days
     cutoff_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -417,6 +440,11 @@ def main() -> None:
             })
 
         for result in results:
+            # Check if URL already processed (resumable)
+            if logger.is_item_completed(result.url):
+                print(f"   ⏭️  Skipping (already processed): {result.url}")
+                continue
+
             if result.url in seen_urls:
                 continue
             seen_urls.add(result.url)
@@ -434,6 +462,7 @@ def main() -> None:
                     "reason": prefilter.reason,
                     "extraction": None,
                 })
+                logger.mark_item_complete(result.url)
                 continue
 
             print(f"   ✓ Pre-filter passed: {prefilter.reason}")
@@ -463,6 +492,7 @@ def main() -> None:
                     "reason": "Failed to parse extraction from LLM response",
                     "extraction": None,
                 })
+                logger.mark_item_complete(result.url)
                 continue
 
             # Ensure all gating criteria are satisfied
@@ -519,10 +549,27 @@ def main() -> None:
                 "extraction": extraction.model_dump()
             })
 
+            # Mark URL as completed for resumability
+            logger.mark_item_complete(result.url)
+
         # Update progress after each query with decision breakdown
+        # Also save intermediate state for resumability
         decision_counts = {}
         for eval in all_evaluations:
             decision_counts[eval["decision"]] = decision_counts.get(eval["decision"], 0) + 1
+
+        # Save intermediate state to step outputs for resume functionality
+        if logger.resumable:
+            # Manually update step outputs with current state
+            step_name = logger.current_step.name if logger.current_step else None
+            if step_name:
+                logger.step_outputs[step_name] = {
+                    "all_results": all_results,
+                    "all_evaluations": all_evaluations,
+                    "qualifying_rows": qualifying_rows,
+                    "seen_urls": list(seen_urls),
+                }
+                logger._save_resume_state()
 
         logger.update({
             "queries_completed": idx,
@@ -542,6 +589,10 @@ def main() -> None:
     # Log all evaluations with decisions and reasons for debugging
     accepted_count = sum(1 for e in all_evaluations if e["decision"] == "accepted")
     logger.output({
+        "all_results": all_results,  # For resume
+        "all_evaluations": all_evaluations,  # Full extraction data with decisions
+        "qualifying_rows": qualifying_rows,  # For resume
+        "seen_urls": list(seen_urls),  # For resume
         "evaluations": all_evaluations,  # Full extraction data with decisions
         "summary": {
             "total_results_fetched": len(all_results),
@@ -567,42 +618,45 @@ def main() -> None:
         "accepted_tenders": accepted_count
     })
 
-    # Always save final CSV to outputs directory
-    output_dir = Path("outputs")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"tenders_{timestamp}.csv"
+    if logger.should_run_step():
+        # Always save final CSV to outputs directory
+        output_dir = Path("outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"tenders_{timestamp}.csv"
 
-    fieldnames = [
-        "decision",
-        "is_tender",
-        "is_recent",
-        "is_location_match",
-        "query",
-        "url",
-        "title",
-        "description",
-        "published_date",
-        "deadline",
-        "value_in_gbp",
-        "currency",
-        "location",
-        "reason",
-    ]
+        fieldnames = [
+            "decision",
+            "is_tender",
+            "is_recent",
+            "is_location_match",
+            "query",
+            "url",
+            "title",
+            "description",
+            "published_date",
+            "deadline",
+            "value_in_gbp",
+            "currency",
+            "location",
+            "reason",
+        ]
 
-    with output_path.open("w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(qualifying_rows)
+        with output_path.open("w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(qualifying_rows)
 
-    accepted_tenders = [row for row in qualifying_rows if row["decision"] == "accepted"]
-    print(f"\n📄 Saved {len(qualifying_rows)} evaluated tenders to {output_path}")
-    print(f"   ✅ {len(accepted_tenders)} accepted")
-    print(f"   ⏭️ {len(qualifying_rows) - len(accepted_tenders)} rejected (but included for review)")
+        accepted_tenders = [row for row in qualifying_rows if row["decision"] == "accepted"]
+        print(f"\n📄 Saved {len(qualifying_rows)} evaluated tenders to {output_path}")
+        print(f"   ✅ {len(accepted_tenders)} accepted")
+        print(f"   ⏭️ {len(qualifying_rows) - len(accepted_tenders)} rejected (but included for review)")
 
-    logger.output({
-        "csv_path": str(output_path),
-        "tenders": qualifying_rows  # Log actual tenders saved to CSV
-    })
+        logger.output({
+            "csv_path": str(output_path),
+            "tenders": qualifying_rows  # Log actual tenders saved to CSV
+        })
+    else:
+        print("⏭️  Results already saved in previous run")
 
     # Finalize logging
     logger.finalize()
