@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.54.0",
     "bs4>=0.0.2",
+    "claude-agent-sdk>=0.1.5",
     "exa-py>=1.16.1",
     "google-genai>=1.44.0",
     "python-dotenv>=1.1.0",
