@@ -1,2 +1,0 @@
--e file 'temp_clip1.mp4'
-file 'temp_clip2.mp4'
