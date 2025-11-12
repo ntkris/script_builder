@@ -12,6 +12,7 @@ from .ai import (
     ToolCall,
     call_anthropic,
     call_gemini,
+    call_openai,
 )
 from .tools import (
     search_exa,
@@ -34,6 +35,7 @@ __all__ = [
     'ToolCall',
     'call_anthropic',
     'call_gemini',
+    'call_openai',
     'search_exa',
     'SearchResult',
     'extract',

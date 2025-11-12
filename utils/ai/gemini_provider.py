@@ -2,6 +2,7 @@
 
 from typing import Optional
 import os
+import base64
 from google import genai
 from google.genai import types
 from .base import AIRequest, AIResponse, Provider, ToolCall
@@ -92,17 +93,41 @@ def call_gemini(
         if role == "assistant":
             role = "model"
 
-        gemini_contents.append(
-            types.Content(
-                role=role,
-                parts=[types.Part(text=content)]
+        # Handle multimodal content (list of parts with text and/or images)
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "text":
+                    parts.append(types.Part(text=part["text"]))
+                elif part.get("type") == "image":
+                    source = part.get("source", {})
+                    if source.get("type") == "base64":
+                        # Gemini expects raw bytes, not base64 string
+                        image_bytes = base64.b64decode(source["data"])
+                        parts.append(
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type=source.get("media_type", "image/png"),
+                                    data=image_bytes
+                                )
+                            )
+                        )
+            gemini_contents.append(
+                types.Content(role=role, parts=parts)
             )
-        )
+        else:
+            # Simple text content
+            gemini_contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part(text=content)]
+                )
+            )
 
     # Make the API call
-    # For single user message, pass as string
-    # For multi-turn, pass as list of Contents
-    if len(gemini_contents) == 1 and gemini_contents[0].role == "user":
+    # For single user message with simple text, pass as string
+    # For multi-turn or multimodal, pass as list of Contents
+    if len(gemini_contents) == 1 and gemini_contents[0].role == "user" and isinstance(request.messages[0]["content"], str):
         contents = request.messages[0]["content"]
     else:
         contents = gemini_contents
@@ -120,7 +145,18 @@ def call_gemini(
     if response.candidates:
         candidate = response.candidates[0]
         if not candidate.content or not candidate.content.parts:
-            raise ValueError("No response from Gemini - content is empty")
+            # Empty response - get finish reason for debugging
+            finish_reason = str(candidate.finish_reason) if hasattr(candidate, 'finish_reason') else "unknown"
+            safety_ratings = []
+            if hasattr(candidate, 'safety_ratings'):
+                safety_ratings = [f"{r.category}: {r.probability}" for r in candidate.safety_ratings]
+
+            error_msg = f"No response from Gemini - content is empty (finish_reason: {finish_reason}"
+            if safety_ratings:
+                error_msg += f", safety: {', '.join(safety_ratings)}"
+            error_msg += ")"
+            raise ValueError(error_msg)
+
         for part in candidate.content.parts:
             if hasattr(part, 'text') and part.text:
                 content += part.text
@@ -131,6 +167,9 @@ def call_gemini(
                     name=fc.name,
                     arguments=dict(fc.args)
                 ))
+    else:
+        # No candidates at all
+        raise ValueError("No response from Gemini - no candidates returned")
 
     # Calculate token usage
     input_tokens = response.usage_metadata.prompt_token_count if hasattr(response, 'usage_metadata') else 0

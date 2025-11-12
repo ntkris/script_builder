@@ -14,6 +14,8 @@ dependencies = [
     "claude-agent-sdk>=0.1.5",
     "exa-py>=1.16.1",
     "google-genai>=1.44.0",
+    "openai>=1.59.5",
+    "playwright>=1.49.0",
     "python-dotenv>=1.1.0",
     "xmltodict>=0.14.2",
 ]

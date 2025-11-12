@@ -12,6 +12,7 @@ from .base import (
 )
 from .anthropic_provider import call_anthropic
 from .gemini_provider import call_gemini
+from .openai_provider import call_openai
 
 __all__ = [
     'AIRequest',
@@ -24,4 +25,5 @@ __all__ = [
     'ToolCall',
     'call_anthropic',
     'call_gemini',
+    'call_openai',
 ]

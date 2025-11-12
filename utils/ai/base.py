@@ -12,22 +12,16 @@ class Provider(str, Enum):
 
 
 class AnthropicModel(str, Enum):
-    """Anthropic Claude models"""
-    CLAUDE_OPUS_4 = "claude-opus-4-20250514"
-    CLAUDE_SONNET_4 = "claude-sonnet-4-20250514"
-    CLAUDE_SONNET_3_5 = "claude-3-5-sonnet-20241022"
-    CLAUDE_3_OPUS = "claude-3-opus-20240229"
-    CLAUDE_3_SONNET = "claude-3-sonnet-20240229"
-    CLAUDE_3_HAIKU = "claude-3-haiku-20240307"
+    """Anthropic Claude models (4.5 series - latest generation)"""
+    CLAUDE_SONNET_4_5 = "claude-sonnet-4-5-20250929"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5-20251001"
 
 
 class OpenAIModel(str, Enum):
-    """OpenAI models"""
-    GPT_4O = "gpt-4o"
-    GPT_4O_MINI = "gpt-4o-mini"
-    GPT_4_TURBO = "gpt-4-turbo"
-    GPT_4 = "gpt-4"
-    GPT_35_TURBO = "gpt-3.5-turbo"
+    """OpenAI models (GPT-5 series - latest generation)"""
+    GPT_5 = "gpt-5"
+    GPT_5_MINI = "gpt-5-mini"
+    GPT_5_NANO = "gpt-5-nano"
 
 
 class GeminiModel(str, Enum):

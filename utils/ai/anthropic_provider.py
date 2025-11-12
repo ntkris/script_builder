@@ -69,13 +69,35 @@ def call_anthropic(
     system_prompt = request.system or ""
 
     if request.json_mode and request.response_schema:
-        # Generate JSON schema prompt
+        # Generate JSON schema prompt for system
         json_schema_prompt = _generate_json_schema_prompt(request.response_schema)
 
         if system_prompt:
             system_prompt = f"{system_prompt}\n\n{json_schema_prompt}"
         else:
             system_prompt = json_schema_prompt
+
+        # Add explicit JSON instruction to the last user message
+        last_message = messages[-1]
+
+        # Handle multipart content (text + images)
+        if isinstance(last_message["content"], list):
+            # Find text part and append instruction
+            for part in last_message["content"]:
+                if part.get("type") == "text":
+                    part["text"] += (
+                        "\n\nIMPORTANT: Respond with ONLY valid JSON data following the schema provided. "
+                        "Do NOT return the schema definition itself - fill in the schema with ACTUAL DATA "
+                        "from your analysis. Your response will be wrapped in XML tags automatically."
+                    )
+                    break
+        else:
+            # Simple text content
+            last_message["content"] += (
+                "\n\nIMPORTANT: Respond with ONLY valid JSON data following the schema provided. "
+                "Do NOT return the schema definition itself - fill in the schema with ACTUAL DATA "
+                "from your analysis. Your response will be wrapped in XML tags automatically."
+            )
 
         # Prefill assistant response with opening XML tag
         # Claude will output JSON and close with </result>
