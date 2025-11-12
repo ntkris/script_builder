@@ -41,6 +41,20 @@ class GeminiModel(str, Enum):
     GEMINI_1_5_PRO = "gemini-1.5-pro"
 
 
+class ReasoningEffort(str, Enum):
+    """Reasoning effort for GPT-5 models"""
+    MINIMAL = "minimal"  # Few/no reasoning tokens, fastest
+    MEDIUM = "medium"    # Balanced (default)
+    HIGH = "high"        # Extended reasoning, slowest
+
+
+class Verbosity(str, Enum):
+    """Output verbosity control for GPT-5 models"""
+    LOW = "low"          # Terse output, minimal prose
+    MEDIUM = "medium"    # Balanced detail (default)
+    HIGH = "high"        # Verbose output
+
+
 class ToolDefinition(BaseModel):
     """
     Tool definition for function calling.
@@ -77,6 +91,8 @@ class AIRequest(BaseModel):
     step_name: str = "LLM Call"  # For tracking/logging purposes
     json_mode: bool = False  # Enable structured output
     response_schema: Optional[Any] = None  # Pydantic model for structured output
+    reasoning_effort: Optional[str] = None  # GPT-5 only: "minimal", "medium", "high"
+    verbosity: Optional[str] = None  # GPT-5 only: "low", "medium", "high"
 
 
 class AIResponse(BaseModel):

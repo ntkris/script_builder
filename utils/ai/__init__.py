@@ -7,6 +7,8 @@ from .base import (
     AnthropicModel,
     OpenAIModel,
     GeminiModel,
+    ReasoningEffort,
+    Verbosity,
     ToolDefinition,
     ToolCall,
 )
@@ -21,6 +23,8 @@ __all__ = [
     'AnthropicModel',
     'OpenAIModel',
     'GeminiModel',
+    'ReasoningEffort',
+    'Verbosity',
     'ToolDefinition',
     'ToolCall',
     'call_anthropic',

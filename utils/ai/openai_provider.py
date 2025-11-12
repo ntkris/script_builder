@@ -146,6 +146,13 @@ def call_openai(
         "max_completion_tokens": request.max_tokens,
     }
 
+    # Add GPT-5 specific parameters
+    if request.reasoning_effort:
+        params["reasoning_effort"] = request.reasoning_effort
+
+    if request.verbosity:
+        params["verbosity"] = request.verbosity
+
     # Handle JSON mode with Structured Outputs
     if request.json_mode:
         if request.response_schema:

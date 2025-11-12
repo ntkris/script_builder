@@ -18,7 +18,11 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from utils import call_gemini, call_anthropic, call_openai, AIRequest, GeminiModel, AnthropicModel, OpenAIModel, save_json
+from utils import (
+    call_gemini, call_anthropic, call_openai,
+    AIRequest, GeminiModel, AnthropicModel, OpenAIModel,
+    ReasoningEffort, Verbosity, save_json
+)
 from utils.step_logger import StepLogger
 load_dotenv()
 
@@ -297,6 +301,8 @@ OUTPUT FORMAT - Respond ONLY with valid JSON matching this structure:
             temperature=0.1,
             json_mode=True,
             response_schema=FloorplanAnalysis,
+            reasoning_effort=ReasoningEffort.MINIMAL,  # Fast, lightweight classification
+            verbosity=Verbosity.LOW,  # Concise JSON output
             step_name=step_name
         )
         response = call_openai(request, logger)
