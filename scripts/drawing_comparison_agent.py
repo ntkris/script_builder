@@ -350,8 +350,9 @@ async def main():
 
     try:
         # Define paths
-        interior_pdf = Path("inputs/drawings/interior_design_drawing.pdf")
-        shop_pdf = Path("inputs/drawings/shop_drawing.pdf")
+        sample_id = "sample_2"
+        interior_pdf = Path(f"inputs/drawings/{sample_id}/interior_design_drawing.pdf")
+        shop_pdf = Path(f"inputs/drawings/{sample_id}/shop_drawing.pdf")
 
         # Run comparison
         report = await run_comparison_agent(interior_pdf, shop_pdf, logger)
