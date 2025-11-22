@@ -2,11 +2,13 @@
 """
 Drawing Comparison Agent
 
-Uses Claude Agent SDK to systematically compare interior design drawings
-with shop drawings to identify inconsistencies that could impact construction.
+Uses Claude Agent SDK to systematically compare design drawings with shop drawings
+to identify inconsistencies that could impact construction.
 
-Use case: Construction company flagged inconsistencies between interior designer's
-drawings and fabrication shop's drawings causing construction delays.
+Works for any drawing type: architectural, structural, MEP, interior design, etc.
+
+Use case: Construction company flagged inconsistencies between design drawings and
+fabrication shop's drawings causing construction delays.
 """
 
 import asyncio
@@ -28,18 +30,19 @@ class Discrepancy(BaseModel):
     id: str
     type: Literal["dimension", "material", "missing_element", "specification", "detail_reference", "other"]
     severity: Literal["critical", "moderate", "minor"]
-    location: str  # Which elevation/detail
+    location: str  # Drawing section, elevation, detail, or sheet reference
     description: str
-    interior_design_value: Optional[str] = None
-    shop_drawing_value: Optional[str] = None
+    design_drawing_value: Optional[str] = None  # Value from design drawing
+    shop_drawing_value: Optional[str] = None     # Value from shop drawing
     construction_impact: str
     recommendation: str
 
 
 class ComparisonReport(BaseModel):
     """Complete comparison report"""
-    project: str
-    client: str
+    project_name: str
+    client_name: Optional[str] = None
+    drawing_type: Optional[str] = None  # e.g., "Interior Design", "MEP", "Structural"
     timestamp: str
     critical_issues: List[Discrepancy]
     moderate_issues: List[Discrepancy]
@@ -50,16 +53,16 @@ class ComparisonReport(BaseModel):
 # Custom tools for the agent
 @tool(
     name="record_discrepancy",
-    description="Record a discrepancy found between the interior design and shop drawings",
+    description="Record a discrepancy found between the design drawing and shop drawing",
     input_schema={
         "type": "object",
         "properties": {
             "id": {"type": "string", "description": "Unique identifier for this discrepancy"},
             "type": {"type": "string", "enum": ["dimension", "material", "missing_element", "specification", "detail_reference", "other"]},
             "severity": {"type": "string", "enum": ["critical", "moderate", "minor"]},
-            "location": {"type": "string", "description": "Which elevation/detail (e.g., 'Elevation A', 'Detail B')"},
+            "location": {"type": "string", "description": "Drawing section, elevation, detail, or sheet reference where discrepancy was found"},
             "description": {"type": "string", "description": "Clear description of the discrepancy"},
-            "interior_design_value": {"type": "string", "description": "Value/spec from interior design drawing"},
+            "design_drawing_value": {"type": "string", "description": "Value/spec from design drawing"},
             "shop_drawing_value": {"type": "string", "description": "Value/spec from shop drawing"},
             "construction_impact": {"type": "string", "description": "How this impacts construction"},
             "recommendation": {"type": "string", "description": "Recommended resolution"}
@@ -77,7 +80,7 @@ async def record_discrepancy(args):
         severity=args["severity"],
         location=args["location"],
         description=args["description"],
-        interior_design_value=args.get("interior_design_value"),
+        design_drawing_value=args.get("design_drawing_value"),
         shop_drawing_value=args.get("shop_drawing_value"),
         construction_impact=args["construction_impact"],
         recommendation=args["recommendation"]
@@ -123,29 +126,41 @@ discrepancies_found: List[Discrepancy] = []
 
 
 async def run_comparison_agent(
-    interior_pdf_path: Path,
+    design_pdf_path: Path,
     shop_pdf_path: Path,
-    logger: StepLogger
+    project_name: str,
+    client_name: Optional[str] = None,
+    drawing_type: Optional[str] = None,
+    logger: Optional[StepLogger] = None
 ) -> ComparisonReport:
-    """Run the drawing comparison agent"""
+    """Run the drawing comparison agent
+
+    Args:
+        design_pdf_path: Path to design drawing PDF
+        shop_pdf_path: Path to shop drawing PDF
+        project_name: Name of the project
+        client_name: Client name (optional)
+        drawing_type: Type of drawing (e.g., "Interior Design", "MEP", "Structural")
+        logger: StepLogger instance for tracking
+    """
 
     global discrepancies_found
     discrepancies_found = []  # Reset
 
     # Step 1: Read both PDFs
     logger.step("Load Drawing PDFs", inputs={
-        "interior_design": str(interior_pdf_path),
+        "design_drawing": str(design_pdf_path),
         "shop_drawing": str(shop_pdf_path)
     })
 
-    print(f"📄 Reading interior design drawing: {interior_pdf_path.name}")
+    print(f"📄 Reading design drawing: {design_pdf_path.name}")
     print(f"📄 Reading shop drawing: {shop_pdf_path.name}")
 
     # Note: We'll pass the PDF paths to Claude and let it read them
     # The PDFs are already available to Claude through the Read tool
 
     logger.output({
-        "interior_design_size": f"{interior_pdf_path.stat().st_size / 1024:.1f} KB",
+        "design_drawing_size": f"{design_pdf_path.stat().st_size / 1024:.1f} KB",
         "shop_drawing_size": f"{shop_pdf_path.stat().st_size / 1024:.1f} KB"
     })
 
@@ -188,52 +203,87 @@ async def run_comparison_agent(
     print("🤖 Starting Agent Analysis...")
     print("="*60)
 
-    prompt = f"""You are a construction quality control expert reviewing architectural drawings.
+    # Build project context
+    project_context = f"Project: {project_name}"
+    if client_name:
+        project_context += f" | Client: {client_name}"
+    if drawing_type:
+        project_context += f" | Drawing Type: {drawing_type}"
 
-TASK: Compare two drawings for the same project (Daughter's Bedroom at 27 Summit 17A) and identify ALL discrepancies that could impact construction.
+    prompt = f"""You are a construction quality control expert reviewing technical drawings.
+
+TASK: Systematically compare a design drawing with a shop drawing for the same project and identify ALL discrepancies that could impact construction.
+
+{project_context}
 
 DRAWINGS TO COMPARE:
-1. Interior Design Drawing: {interior_pdf_path}
+1. Design Drawing: {design_pdf_path}
 2. Shop Drawing: {shop_pdf_path}
 
 COMPARISON METHODOLOGY:
-1. Read both PDFs thoroughly
-2. For EACH elevation (A, B, C) systematically compare:
-   - Overall dimensions
-   - Component dimensions
-   - Materials and finishes
-   - Detail references (A, B, C, D, E, F, G, H)
-   - Heights and levels
-   - Specifications
 
-3. For EACH detail callout (Details A-H):
-   - Check if it exists in both drawings
-   - Compare dimensions and specifications
-   - Verify consistency
+1. DISCOVERY PHASE - First, read both PDFs thoroughly to understand:
+   - What type of drawings these are (architectural, structural, MEP, interior, etc.)
+   - The overall scope and what elements are shown
+   - How the drawings are organized (sheets, elevations, sections, details, etc.)
+   - Naming conventions and reference systems used
+   - Units of measurement
 
-4. Use the record_discrepancy tool for EVERY inconsistency found:
-   - CRITICAL: Dimension mismatches, missing structural elements, wrong materials
-   - MODERATE: Finish discrepancies, minor dimension differences, unclear specs
-   - MINOR: Notation differences, scale variations (if not impacting actual size)
+2. SYSTEMATIC COMPARISON - Compare the drawings element by element:
 
-5. Be thorough - construction delays are expensive. Check:
-   - Marble skirting dimensions (75mm mentioned?)
-   - Paneling specifications (18+18 HDHMR vs other materials)
-   - Study unit dimensions and specifications
-   - Architrave details and grooves
-   - Cabinet and shutter specifications
-   - All detail callouts match between drawings
+   a) STRUCTURE & ORGANIZATION:
+      - Are all sheets/sections from design drawing represented in shop drawing?
+      - Are any elements missing or added?
+      - Do reference systems align (detail callouts, grid lines, etc.)?
 
-6. After completing analysis, use get_discrepancy_count to verify your findings
+   b) DIMENSIONS & MEASUREMENTS:
+      - Overall dimensions
+      - Component dimensions
+      - Heights, depths, widths
+      - Spacing and clearances
+      - Tolerances
 
-IMPORTANT:
-- Read the actual PDF files using the Read tool
-- Be systematic - go elevation by elevation
-- Record EVERY discrepancy, no matter how small
-- Focus on construction impact
+   c) MATERIALS & SPECIFICATIONS:
+      - Material types and grades
+      - Finishes and surface treatments
+      - Assembly methods
+      - Hardware and fixtures
+      - Product specifications
+
+   d) DETAILS & CONNECTIONS:
+      - Detail callouts exist in both drawings
+      - Construction details match
+      - Connection methods
+      - Joint details
+      - Edge conditions
+
+   e) ANNOTATIONS & NOTES:
+      - Critical notes present in both
+      - Specification references
+      - Installation instructions
+      - Performance requirements
+
+3. RECORD DISCREPANCIES using the record_discrepancy tool:
+
+   SEVERITY GUIDELINES:
+   - CRITICAL: Dimension mismatches >5%, missing structural/functional elements,
+     wrong materials that affect performance, safety issues
+   - MODERATE: Minor dimension differences (1-5%), finish discrepancies,
+     unclear specifications, missing non-critical elements
+   - MINOR: Notation differences, formatting variations, scale differences
+     (if not affecting actual dimensions)
+
+4. After completing analysis, use get_discrepancy_count to verify your findings
+
+IMPORTANT PRINCIPLES:
+- Let the drawings tell you what to compare - don't assume a structure
+- Be systematic but adaptive to what's actually in the drawings
+- Every discrepancy matters - construction delays are expensive
+- Focus on construction impact and buildability
 - Provide actionable recommendations
+- If drawings use different terminology, note it but look for functional equivalence
 
-Begin your systematic analysis now."""
+Begin your systematic analysis now. Start by reading both PDFs to understand what you're working with."""
 
     messages = []
     token_usage = None
@@ -276,8 +326,9 @@ Begin your systematic analysis now."""
     print(f"   Minor: {len(minor)}")
 
     report = ComparisonReport(
-        project="27 Summit 17A - Daughter's Bedroom",
-        client="Mr. & Mrs. Kannan",
+        project_name=project_name,
+        client_name=client_name,
+        drawing_type=drawing_type,
         timestamp=datetime.now().isoformat(),
         critical_issues=critical,
         moderate_issues=moderate,
@@ -286,9 +337,7 @@ Begin your systematic analysis now."""
             "total_discrepancies": len(discrepancies_found),
             "critical_count": len(critical),
             "moderate_count": len(moderate),
-            "minor_count": len(minor),
-            "elevations_reviewed": ["A", "B", "C"],
-            "details_reviewed": ["A", "B", "C", "D", "E", "F", "G", "H"]
+            "minor_count": len(minor)
         }
     )
 
@@ -318,7 +367,7 @@ def save_discrepancies_to_csv(report: ComparisonReport, output_path: Path):
         "type",
         "location",
         "description",
-        "interior_design_value",
+        "design_drawing_value",
         "shop_drawing_value",
         "construction_impact",
         "recommendation"
@@ -340,22 +389,34 @@ async def main():
     logger = StepLogger("drawing_comparison_agent")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Project configuration
+    sample_id = "sample_2"
+    project_name = "27 Summit 17A - Daughter's Bedroom"
+    client_name = "Mr. & Mrs. Kannan"
+    drawing_type = "Interior Design"
+
     print("\n" + "="*60)
     print("🏗️  Drawing Comparison Agent")
     print("="*60)
-    print("\nComparing interior design vs shop drawings")
-    print("Client: Mr. & Mrs. Kannan")
-    print("Project: 27 Summit 17A - Daughter's Bedroom")
+    print(f"\nProject: {project_name}")
+    print(f"Client: {client_name}")
+    print(f"Drawing Type: {drawing_type}")
     print("="*60 + "\n")
 
     try:
         # Define paths
-        sample_id = "sample_2"
-        interior_pdf = Path(f"inputs/drawings/{sample_id}/interior_design_drawing.pdf")
+        design_pdf = Path(f"inputs/drawings/{sample_id}/interior_design_drawing.pdf")
         shop_pdf = Path(f"inputs/drawings/{sample_id}/shop_drawing.pdf")
 
         # Run comparison
-        report = await run_comparison_agent(interior_pdf, shop_pdf, logger)
+        report = await run_comparison_agent(
+            design_pdf,
+            shop_pdf,
+            project_name=project_name,
+            client_name=client_name,
+            drawing_type=drawing_type,
+            logger=logger
+        )
 
         # Save report
         logger.step("Save Discrepancy Report")
